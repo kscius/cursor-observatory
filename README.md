@@ -1,0 +1,149 @@
+# Cursor Observatory
+
+Local analytics for **Cursor** — measure **how much**, **where**, and **how** you work with the agent across all projects on your machine.
+
+Privacy-first: everything runs locally. Your transcripts and hook logs never leave your computer.
+
+Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (behavior) and your existing `~/.cursor/hooks` telemetry (volume).
+
+## What it measures
+
+| Dimension | Examples |
+|-----------|----------|
+| **How much** | Tokens (in/out/cache), generations, sessions, tool calls |
+| **Where** | Project/workspace, model, tools, MCP/shell commands |
+| **How** | AI fluency score, archetype, briefing/verification/context dimensions |
+| **Granularity** | Hourly, daily, per chat, per prompt (from transcripts) |
+
+## Requirements
+
+- **Node.js 22+** (uses built-in `node:sqlite`)
+- **Python 3.8+** (optional — `analyzer/behavior.py` for extended scoring)
+- Cursor with hooks logging to `~/.cursor/hooks/logs/` (KS Cursor Orchestrator setup already does this)
+
+## Quick start
+
+```bash
+cd C:\Development\cursor-observatory
+npm run dashboard
+```
+
+This will:
+
+1. Ingest hook logs + agent transcripts from `~/.cursor`
+2. Aggregate into SQLite at `~/.cursor/observatory/observatory.db`
+3. Generate `~/.cursor/observatory/reports/latest.html` and open it
+
+## CLI
+
+```bash
+node bin/cursor-observatory.mjs ingest          # incremental ingest + rollup
+node bin/cursor-observatory.mjs ingest --full   # re-read all log files
+node bin/cursor-observatory.mjs ingest --no-rollup  # ingest only (faster)
+node bin/cursor-observatory.mjs rollup          # recompute aggregates only
+node bin/cursor-observatory.mjs report          # regenerate reports
+node bin/cursor-observatory.mjs report --with-llm # report + OpenAI coaching (needs API key)
+node bin/cursor-observatory.mjs dashboard       # ingest + report + open browser
+node bin/cursor-observatory.mjs dashboard --with-llm
+node bin/cursor-observatory.mjs watch           # auto-refresh on file changes
+node bin/cursor-observatory.mjs watch --interval 60
+node bin/cursor-observatory.mjs prune           # apply retention (if configured)
+node bin/cursor-observatory.mjs status          # DB summary
+npm test
+```
+
+## Always-on usage
+
+**Passive collection** — Cursor hooks write logs automatically while you work.
+
+**Refresh reports** — run `npm run dashboard` when you want an updated view.
+
+**Near real-time** — run `npm run watch` in a terminal; it re-ingests when hook logs or transcripts change (plus periodic refresh every 30s by default).
+
+**Scheduled (Windows)** — optional Task Scheduler entry:
+
+```powershell
+schtasks /Create /TN "Cursor Observatory Ingest" /TR "cmd /c cd /d C:\Development\cursor-observatory && npm run ingest" /SC HOURLY /F
+```
+
+## Data sources
+
+| Source | Path |
+|--------|------|
+| Hook audit (tokens, tools, sessions) | `~/.cursor/hooks/logs/agent-audit.jsonl` |
+| Session end | `~/.cursor/hooks/logs/session-summary.jsonl` |
+| Subagents | `~/.cursor/hooks/logs/subagent-audit.jsonl` |
+| Agent transcripts | `~/.cursor/projects/*/agent-transcripts/**/*.jsonl` |
+| Optional collector | `~/.cursor/observatory/events/hook-events.jsonl` |
+
+## Optional: dedicated hook collector
+
+Copy `collector/observatory-collector.js` and register in `~/.cursor/hooks.json` on:
+
+- `beforeSubmitPrompt`
+- `sessionStart` / `sessionEnd`
+- `stop`
+
+Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl`.
+
+## Configuration
+
+Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
+
+## Recommendations (Guide cards)
+
+Each dashboard section (Overview, Usage, Behavior, Sessions, Tools) includes a **Guide & recommendations** panel:
+
+- **Explain** — what the section measures and how to read it
+- **Metrics glossary** — key numbers with hints
+- **Insights** — offline heuristics from your data
+- **Suggested actions** — concrete next steps
+
+**Sessions UX:** click a row for trace details + **event timeline** (hook events per chat). Sort any column via header click. **Export CSV** exports visible (filtered) rows. **Theme** toggle (nav, top-right) switches light/dark; preference persists in `localStorage`.
+
+Deterministic recommendations run on every report (no network).
+
+### Optional: LLM coaching (OpenAI)
+
+Enable richer, personalized coaching per section via OpenAI:
+
+```powershell
+$env:OPENAI_API_KEY = "sk-..."
+node bin/cursor-observatory.mjs report --with-llm
+```
+
+Or in `~/.cursor/observatory/config.json`:
+
+```json
+"recommendations": {
+  "enabled": true,
+  "llm": {
+    "enabled": true,
+    "model": "gpt-4o-mini",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "useCache": true,
+    "sections": ["behavior", "overview", "usage", "sessions", "tools"]
+  }
+}
+```
+
+Responses are cached at `~/.cursor/observatory/cache/llm-recommendations.json` so repeat reports stay fast. Only aggregated metrics are sent — not full transcripts.
+
+**Cursor SDK / Composer 2.5:** not wired yet; use OpenAI today or extend `src/llm.mjs` with a second provider when you add `@cursor/sdk` and `CURSOR_API_KEY`.
+
+
+- **KS Cursor Orchestrator** — rules, commands, hooks (produces telemetry)
+- **cursor-observatory** — reads telemetry + transcripts (consumes data)
+
+Keep this repo separate; only thin integration (collector hook + `/stats` can call this CLI later).
+
+## Limitations
+
+- Token counts come from Cursor hook `stop` events — approximate vs official billing dashboard
+- Transcript JSONL lacks per-line timestamps (mtime used as proxy for historical chats)
+- Tab completions / inline edits may not appear in agent transcripts
+- Multi-machine: each PC has its own database
+
+## License
+
+MIT — see [LICENSE](LICENSE).

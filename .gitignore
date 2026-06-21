@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+*.db
+*.db-journal
+reports/
+.observatory/
+__pycache__/
+*.pyc
+.pytest_cache/
+config.json

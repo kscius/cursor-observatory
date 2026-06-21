@@ -1,0 +1,23 @@
+{
+  "name": "cursor-observatory",
+  "version": "0.1.0",
+  "description": "Local Cursor usage observatory — how much, where, and how you work with the agent",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "cursor-observatory": "./bin/cursor-observatory.mjs"
+  },
+  "scripts": {
+    "ingest": "node bin/cursor-observatory.mjs ingest",
+    "rollup": "node bin/cursor-observatory.mjs rollup",
+    "report": "node bin/cursor-observatory.mjs report",
+    "dashboard": "node bin/cursor-observatory.mjs dashboard",
+    "watch": "node bin/cursor-observatory.mjs watch",
+    "prune": "node bin/cursor-observatory.mjs prune",
+    "status": "node bin/cursor-observatory.mjs status",
+    "test": "node tests/run-tests.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

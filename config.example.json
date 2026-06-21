@@ -1,0 +1,29 @@
+{
+  "cursorHome": "~/.cursor",
+  "dataDir": "~/.cursor/observatory",
+  "dbPath": "~/.cursor/observatory/observatory.db",
+  "reportsDir": "~/.cursor/observatory/reports",
+  "archiveDir": "~/.cursor/observatory/archive",
+  "ingest": {
+    "auditLogs": true,
+    "sessionSummary": true,
+    "subagentAudit": true,
+    "toolFailures": true,
+    "transcripts": true,
+    "includeRotatedLogs": true
+  },
+  "retention": {
+    "keepRawEventsDays": 0
+  },
+  "recommendations": {
+    "enabled": true,
+    "llm": {
+      "enabled": true,
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "useCache": true,
+      "sections": ["behavior", "overview", "usage", "sessions", "tools"]
+    }
+  }
+}
