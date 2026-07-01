@@ -24,7 +24,10 @@ Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (beha
 ## Quick start
 
 ```bash
-cd C:\Development\cursor-observatory
+git clone https://github.com/kscius/cursor-observatory.git
+cd cursor-observatory
+node --version  # requires Node.js 22+
+npm install
 npm run dashboard
 ```
 
@@ -90,6 +93,8 @@ Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl`.
 
 Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
 
+Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config.
+
 ## Recommendations (Guide cards)
 
 Each dashboard section (Overview, Usage, Behavior, Sessions, Tools) includes a **Guide & recommendations** panel:
@@ -131,6 +136,7 @@ Responses are cached at `~/.cursor/observatory/cache/llm-recommendations.json` s
 
 **Cursor SDK / Composer 2.5:** not wired yet; use OpenAI today or extend `src/llm.mjs` with a second provider when you add `@cursor/sdk` and `CURSOR_API_KEY`.
 
+## Related projects
 
 - **KS Cursor Orchestrator** — rules, commands, hooks (produces telemetry)
 - **cursor-observatory** — reads telemetry + transcripts (consumes data)

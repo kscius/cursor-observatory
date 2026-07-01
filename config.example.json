@@ -18,7 +18,7 @@
   "recommendations": {
     "enabled": true,
     "llm": {
-      "enabled": true,
+      "enabled": false,
       "provider": "openai",
       "model": "gpt-4o-mini",
       "apiKeyEnv": "OPENAI_API_KEY",

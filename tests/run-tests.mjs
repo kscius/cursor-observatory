@@ -19,10 +19,16 @@ import { runAllRollups } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
 import { buildDeterministicRecommendations } from "../src/recommend.mjs";
 
-assert.equal(decodeProjectSlug("c-Development-AGORA"), "C:\\Development\\AGORA");
-assert.equal(normalizeProjectPath("c:\\Development\\foo"), "C:\\Development\\foo");
+const windowsProject = `C:${path.sep}Development${path.sep}AGORA`;
+assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
+assert.equal(normalizeProjectPath("c:\\Development\\foo"), `C:${path.sep}Development${path.sep}foo`);
 assert.equal(shortProjectName("c:\\Development\\AGORA"), "AGORA");
 assert.equal(projectPathContext("c:\\Development\\AGORA"), "C:/Development");
+
+const exampleConfig = JSON.parse(
+  fs.readFileSync(new URL("../config.example.json", import.meta.url), "utf8")
+);
+assert.equal(exampleConfig.recommendations?.llm?.enabled, false);
 
 const sampleAudit = JSON.stringify({
   timestamp: "2026-06-18T00:34:02.971Z",
