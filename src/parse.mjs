@@ -131,7 +131,7 @@ export function normalizeProjectPath(p) {
   const m = p.match(/^([a-zA-Z]):[\\/]?(.*)$/);
   if (m) {
     const drive = m[1].toUpperCase();
-    const rest = m[2].replace(/\//g, path.sep);
+    const rest = m[2].replace(/[\\/]/g, path.sep);
     return rest ? `${drive}:${path.sep}${rest}` : `${drive}:${path.sep}`;
   }
   return p;
