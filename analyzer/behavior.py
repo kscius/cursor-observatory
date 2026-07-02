@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional extended behavior analysis (stdlib only). Called by CLI if needed."""
+"""Standalone optional behavior scorer (stdlib only). Not wired into the Node CLI."""
 from __future__ import annotations
 
 import json
