@@ -24,10 +24,14 @@ export function loadConfig() {
 
   let raw = {};
   for (const file of candidates) {
-    if (fs.existsSync(file)) {
+    if (!fs.existsSync(file)) continue;
+    try {
       raw = JSON.parse(fs.readFileSync(file, "utf8"));
-      break;
+    } catch (err) {
+      const detail = err instanceof SyntaxError ? err.message : String(err);
+      throw new Error(`Invalid JSON in config file ${file}: ${detail}`);
     }
+    break;
   }
 
   const cursorHome = expandHome(raw.cursorHome || "~/.cursor");

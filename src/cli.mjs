@@ -57,6 +57,7 @@ export async function runCli(argv) {
   ensureDataDirs(config);
   const db = openDatabase(config.dbPath);
 
+  try {
   if (cmd === "status") {
     const totals = queryScalar(
       db,
@@ -168,4 +169,7 @@ export async function runCli(argv) {
   }
 
   throw new Error(`Unknown command: ${cmd}`);
+  } finally {
+    if (cmd !== "watch") db.close();
+  }
 }
