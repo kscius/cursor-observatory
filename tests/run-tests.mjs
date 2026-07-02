@@ -18,6 +18,8 @@ import { ingestAll } from "../src/ingest.mjs";
 import { runAllRollups } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
 import { buildDeterministicRecommendations } from "../src/recommend.mjs";
+import { expandHome } from "../src/config.mjs";
+import { applyRetention } from "../src/retention.mjs";
 
 const windowsProject = `C:${path.sep}Development${path.sep}AGORA`;
 assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
@@ -29,6 +31,11 @@ const exampleConfig = JSON.parse(
   fs.readFileSync(new URL("../config.example.json", import.meta.url), "utf8")
 );
 assert.equal(exampleConfig.recommendations?.llm?.enabled, false);
+
+const home = os.homedir();
+assert.equal(expandHome("~"), home);
+assert.equal(expandHome("~/observatory"), path.join(home, "observatory"));
+assert.equal(expandHome(null), null);
 
 const sampleAudit = JSON.stringify({
   timestamp: "2026-06-18T00:34:02.971Z",
@@ -124,6 +131,32 @@ const eventMap = buildSessionEventMap(db, [{ conversation_id: "conv-test-1" }]);
 assert.ok(Array.isArray(eventMap["conv-test-1"]));
 assert.ok(eventMap["conv-test-1"].length >= 1);
 assert.equal(eventMap["conv-test-1"][0].type, "stop");
+
+// Retention: prune events older than N days
+const retentionDbPath = path.join(tmp, "retention.db");
+const retentionDb = openDatabase(retentionDbPath);
+retentionDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+     VALUES (?, 'stop', ?, ?, ?)`
+  )
+  .run("2020-01-01T00:00:00.000Z", "old", "old.jsonl", 1);
+retentionDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+     VALUES (?, 'stop', ?, ?, ?)`
+  )
+  .run(new Date().toISOString(), "new", "new.jsonl", 1);
+const disabled = applyRetention(retentionDb, { retention: { keepRawEventsDays: 0 } });
+assert.equal(disabled.pruned, 0);
+assert.equal(disabled.reason, "retention disabled");
+const pruned = applyRetention(retentionDb, { retention: { keepRawEventsDays: 30 } });
+assert.equal(pruned.pruned, 1);
+assert.equal(
+  retentionDb.prepare("SELECT COUNT(*) AS n FROM events").get().n,
+  1
+);
+retentionDb.close();
 
 db.close();
 try {

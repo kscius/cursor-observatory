@@ -18,13 +18,9 @@ Non-obvious caveats:
 
 - **No lint step and no runtime dependencies.** `npm install` is effectively a no-op
   (there is no lockfile and nothing to build).
-- **`npm test` has 4 Windows-only assertions that fail on Linux/macOS.** The top of
-  `tests/run-tests.mjs` asserts `decodeProjectSlug` / `normalizeProjectPath` output with
-  backslash paths (e.g. `C:\Development\AGORA`). Those helpers use `path.sep`, which is
-  `/` on Linux, so the assertions fail before reaching the integration tests. This is a
-  known cross-platform limitation of the test file (the app was authored for Windows),
-  not a regression. The core pipeline (`ingest → rollup → report`, behavior scoring,
-  recommendations) works correctly on Linux — verify it by running the CLI directly.
+- **`npm test` passes on Linux/macOS and Windows.** Path helpers use `path.sep`, so
+  cross-platform assertions in `tests/run-tests.mjs` stay green in CI (see
+  `.github/workflows/test.yml`).
 - **A fresh VM has no real telemetry.** `~/.cursor/hooks/logs/` is usually empty, so
   `ingest` reports 0 events and the dashboard renders empty. To exercise the full
   pipeline, seed sample events into `~/.cursor/hooks/logs/agent-audit.jsonl` (one JSON

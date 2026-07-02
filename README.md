@@ -18,7 +18,7 @@ Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (beha
 ## Requirements
 
 - **Node.js 22+** (uses built-in `node:sqlite`)
-- **Python 3.8+** (optional — `analyzer/behavior.py` for extended scoring)
+- **Python 3.8+** (optional — standalone `analyzer/behavior.py` for ad-hoc prompt scoring)
 - Cursor with hooks logging to `~/.cursor/hooks/logs/` (KS Cursor Orchestrator setup already does this)
 
 ## Quick start
@@ -68,6 +68,15 @@ npm test
 ```powershell
 schtasks /Create /TN "Cursor Observatory Ingest" /TR "cmd /c cd /d C:\Development\cursor-observatory && npm run ingest" /SC HOURLY /F
 ```
+
+**Scheduled (Linux/macOS)** — optional cron entry (hourly ingest):
+
+```bash
+# crontab -e
+0 * * * * cd /path/to/cursor-observatory && npm run ingest
+```
+
+After `prune` removes old raw events, run `rollup` (or `dashboard`) so session aggregates stay consistent with retained data.
 
 ## Data sources
 
