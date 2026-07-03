@@ -76,7 +76,7 @@ schtasks /Create /TN "Cursor Observatory Ingest" /TR "cmd /c cd /d C:\Developmen
 0 * * * * cd /path/to/cursor-observatory && npm run ingest
 ```
 
-After `prune` removes old raw events, run `rollup` (or `dashboard`) so session aggregates stay consistent with retained data.
+After `prune` removes old raw events, session aggregates are recomputed automatically when any rows were deleted. Use `rollup` or `dashboard` if you pruned outside the CLI.
 
 ## Data sources
 

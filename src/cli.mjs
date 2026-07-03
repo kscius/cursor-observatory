@@ -104,6 +104,10 @@ export async function runCli(argv) {
   if (cmd === "prune") {
     const result = applyRetention(db, config);
     console.log("Retention:", JSON.stringify(result));
+    if (result.pruned > 0) {
+      const roll = runAllRollups(db);
+      console.log(`Rollups: ${roll.sessions} sessions after prune`);
+    }
     return;
   }
 
@@ -158,13 +162,21 @@ export async function runCli(argv) {
 
   if (cmd === "watch") {
     const intervalMs = parseIntervalMs(rest);
-    startWatch(config, db, {
+    const stop = startWatch(config, db, {
       intervalMs,
       onRefresh: (paths) => {
         console.log(`  Report: ${paths.latestHtml}`);
       },
     });
-    await new Promise(() => {});
+    await new Promise((resolve) => {
+      const onSignal = () => {
+        stop();
+        db.close();
+        resolve();
+      };
+      process.once("SIGINT", onSignal);
+      process.once("SIGTERM", onSignal);
+    });
     return;
   }
 
