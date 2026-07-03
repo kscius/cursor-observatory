@@ -327,7 +327,9 @@ export function ingestAll(db, config) {
   if (config.ingest.toolFailures) {
     summary.tools = ingestToolFailures(db, config.hooksLogsDir);
   }
-  summary.hookEvents = ingestHookEvents(db, config.dataDir);
+  if (config.ingest.hookEvents) {
+    summary.hookEvents = ingestHookEvents(db, config.dataDir);
+  }
   if (config.ingest.transcripts) {
     summary.transcripts = ingestTranscripts(db, config.projectsDir);
   }

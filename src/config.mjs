@@ -51,6 +51,7 @@ export function loadConfig() {
       subagentAudit: raw.ingest?.subagentAudit !== false,
       toolFailures: raw.ingest?.toolFailures !== false,
       transcripts: raw.ingest?.transcripts !== false,
+      hookEvents: raw.ingest?.hookEvents !== false,
       includeRotatedLogs: raw.ingest?.includeRotatedLogs !== false,
     },
     retention: {
