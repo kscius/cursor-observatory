@@ -156,6 +156,96 @@ assert.equal(
   retentionDb.prepare("SELECT COUNT(*) AS n FROM events").get().n,
   1
 );
+
+// Prune + rollup: session aggregates reflect retained events only
+const pruneDbPath = path.join(tmp, "prune-rollup.db");
+const pruneDb = openDatabase(pruneDbPath);
+const convId = "conv-prune-test";
+pruneDb
+  .prepare(
+    `INSERT INTO events (
+      ts, event_type, conversation_id, input_tokens, output_tokens,
+      source_file, source_line
+    ) VALUES (?, 'stop', ?, ?, ?, ?, ?)`
+  )
+  .run("2020-01-01T00:00:00.000Z", convId, 1000, 100, "old.jsonl", 1);
+pruneDb
+  .prepare(
+    `INSERT INTO events (
+      ts, event_type, conversation_id, input_tokens, output_tokens,
+      source_file, source_line
+    ) VALUES (?, 'stop', ?, ?, ?, ?, ?)`
+  )
+  .run(new Date().toISOString(), convId, 200, 20, "new.jsonl", 1);
+runAllRollups(pruneDb);
+assert.equal(
+  pruneDb.prepare("SELECT total_input_tokens AS n FROM sessions WHERE conversation_id = ?").get(convId).n,
+  1200
+);
+applyRetention(pruneDb, { retention: { keepRawEventsDays: 30 } });
+runAllRollups(pruneDb);
+assert.equal(
+  pruneDb.prepare("SELECT total_input_tokens AS n FROM sessions WHERE conversation_id = ?").get(convId).n,
+  200
+);
+pruneDb.close();
+
+// Transcript ingest: user prompts extracted, injected prompts skipped
+const transcriptDir = path.join(
+  tmp,
+  "projects",
+  "c-Development-Demo",
+  "agent-transcripts",
+  "conv-transcript-1"
+);
+fs.mkdirSync(transcriptDir, { recursive: true });
+const transcriptPath = path.join(transcriptDir, "conv-transcript-1.jsonl");
+fs.writeFileSync(
+  transcriptPath,
+  [
+    JSON.stringify({
+      role: "user",
+      message: {
+        content: [{ type: "text", text: "<user_query>\nfix the login bug\n</user_query>" }],
+      },
+    }),
+    JSON.stringify({
+      role: "user",
+      message: {
+        content: [{ type: "text", text: "<system_reminder>injected context</system_reminder>" }],
+      },
+    }),
+  ].join("\n") + "\n"
+);
+const transcriptDbPath = path.join(tmp, "transcript.db");
+const transcriptDb = openDatabase(transcriptDbPath);
+const transcriptConfig = {
+  cursorHome: tmp,
+  dataDir: path.join(tmp, "observatory"),
+  hooksLogsDir: hooksDir,
+  projectsDir: path.join(tmp, "projects"),
+  ingest: {
+    auditLogs: false,
+    sessionSummary: false,
+    subagentAudit: false,
+    toolFailures: false,
+    transcripts: true,
+    hookEvents: false,
+    includeRotatedLogs: false,
+  },
+};
+const transcriptSummary = ingestAll(transcriptDb, transcriptConfig);
+assert.equal(transcriptSummary.transcripts.transcripts, 1);
+assert.equal(transcriptSummary.transcripts.prompts, 1);
+assert.equal(
+  transcriptDb.prepare("SELECT COUNT(*) AS n FROM prompts").get().n,
+  1
+);
+assert.ok(
+  transcriptDb.prepare("SELECT preview FROM prompts LIMIT 1").get().preview.includes("fix the login bug")
+);
+transcriptDb.close();
+
 retentionDb.close();
 
 db.close();
