@@ -184,11 +184,17 @@ export function buildJsonReport(db) {
     ),
     daily: queryAll(
       db,
-      `SELECT day_key, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
-              SUM(session_count) AS sessions
-       FROM daily_stats
-       GROUP BY day_key
-       ORDER BY day_key ASC
+      `SELECT d.day_key,
+              SUM(d.input_tokens) AS input_tokens,
+              SUM(d.output_tokens) AS output_tokens,
+              (SELECT COUNT(DISTINCT e.conversation_id)
+               FROM events e
+               WHERE e.event_type = 'stop'
+                 AND e.conversation_id IS NOT NULL
+                 AND substr(e.ts, 1, 10) = d.day_key) AS sessions
+       FROM daily_stats d
+       GROUP BY d.day_key
+       ORDER BY d.day_key ASC
        LIMIT 30`
     ),
     hourlyToday: queryAll(

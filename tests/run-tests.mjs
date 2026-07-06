@@ -11,13 +11,18 @@ import {
   projectPathContext,
   unwrapAuditEntry,
   parseTranscriptRecords,
+  stripBom,
+  primaryWorkspace,
+  projectFromTranscriptPath,
+  isInjectedPrompt,
+  detectSlashCommand,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase } from "../src/db.mjs";
 import { ingestAll } from "../src/ingest.mjs";
 import { runAllRollups } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
-import { buildDeterministicRecommendations } from "../src/recommend.mjs";
+import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
 import { expandHome } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
 import { runCli } from "../src/cli.mjs";
@@ -27,6 +32,29 @@ assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
 assert.equal(normalizeProjectPath("c:\\Development\\foo"), `C:${path.sep}Development${path.sep}foo`);
 assert.equal(shortProjectName("c:\\Development\\AGORA"), "AGORA");
 assert.equal(projectPathContext("c:\\Development\\AGORA"), "C:/Development");
+
+assert.equal(stripBom("\uFEFFhello"), "hello");
+assert.equal(stripBom("hello"), "hello");
+assert.equal(primaryWorkspace(["/c:/Development/Foo"]), `C:${path.sep}Development${path.sep}Foo`);
+assert.equal(
+  projectFromTranscriptPath("C:/Users/x/.cursor/projects/c-Development-Demo/agent-transcripts/x.jsonl"),
+  `C:${path.sep}Development${path.sep}Demo`
+);
+assert.equal(isInjectedPrompt("<system_reminder>context</system_reminder>"), true);
+assert.equal(isInjectedPrompt("[MUST] follow rules"), true);
+assert.equal(isInjectedPrompt("fix the login bug"), false);
+assert.equal(detectSlashCommand("<user_query>/fix-bug in auth</user_query>"), "fix-bug");
+
+const badRawAudit = JSON.stringify({
+  timestamp: "2026-06-18T00:34:02.971Z",
+  data: { raw: "not-json" },
+});
+const badEv = unwrapAuditEntry(JSON.parse(badRawAudit));
+assert.equal(badEv.eventType, "unknown");
+
+const emptyBehavior = scoreBehaviorFromPrompts([]);
+assert.equal(emptyBehavior.archetype, "Sprinter");
+assert.equal(emptyBehavior.fluencyScore, 50);
 
 const exampleConfig = JSON.parse(
   fs.readFileSync(new URL("../config.example.json", import.meta.url), "utf8")
@@ -126,6 +154,13 @@ assert.ok(recs.sections.overview?.explain);
 assert.ok(recs.sections.behavior?.metrics?.length >= 5);
 assert.ok(Array.isArray(recs.sections.behavior?.actions));
 
+const merged = mergeLlmRecommendations(recs, {
+  behavior: { summary: "test summary", actions: ["run tests"] },
+});
+assert.equal(merged.source, "hybrid");
+assert.equal(merged.sections.behavior.llmSummary, "test summary");
+assert.deepEqual(merged.sections.behavior.llmActions, ["run tests"]);
+
 const full = await buildFullReport(db, { recommendations: { enabled: true } });
 assert.ok(full.recommendations?.sections?.overview);
 
@@ -152,6 +187,9 @@ retentionDb
 const disabled = applyRetention(retentionDb, { retention: { keepRawEventsDays: 0 } });
 assert.equal(disabled.pruned, 0);
 assert.equal(disabled.reason, "retention disabled");
+const invalidDays = applyRetention(retentionDb, { retention: { keepRawEventsDays: "abc" } });
+assert.equal(invalidDays.pruned, 0);
+assert.equal(invalidDays.reason, "retention disabled");
 const pruned = applyRetention(retentionDb, { retention: { keepRawEventsDays: 30 } });
 assert.equal(pruned.pruned, 1);
 assert.equal(
@@ -248,6 +286,46 @@ assert.ok(
 );
 transcriptDb.close();
 
+// Incremental ingest: checkpoint resume and dedup on re-ingest
+const cpHooksDir = path.join(tmp, "hooks-cp", "logs");
+fs.mkdirSync(cpHooksDir, { recursive: true });
+const cpAuditPath = path.join(cpHooksDir, "agent-audit.jsonl");
+const cpLine1 = JSON.stringify({
+  timestamp: "2026-06-21T10:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-cp-1",
+      hook_event_name: "stop",
+      model: "model-a",
+      input_tokens: 10,
+      output_tokens: 1,
+      workspace_roots: ["/c:/Development/CpTest"],
+    }),
+  },
+});
+const cpLine2 = JSON.stringify({
+  timestamp: "2026-06-21T11:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-cp-2",
+      hook_event_name: "stop",
+      model: "model-b",
+      input_tokens: 20,
+      output_tokens: 2,
+      workspace_roots: ["/c:/Development/CpTest"],
+    }),
+  },
+});
+fs.writeFileSync(cpAuditPath, cpLine1 + "\n");
+const cpDbPath = path.join(tmp, "checkpoint.db");
+const cpDb = openDatabase(cpDbPath);
+const cpConfig = {
+  cursorHome: tmp,
+  dataDir: path.join(tmp, "observatory-cp"),
+  hooksLogsDir: cpHooksDir,
+  projectsDir: path.join(tmp, "projects"),
+  ingest: {
+    auditLogs: true,
 // Secondary hook logs: session-summary, subagent-audit, tool-failures
 const secondaryHooksDir = path.join(tmp, "secondary-hooks", "logs");
 fs.mkdirSync(secondaryHooksDir, { recursive: true });
@@ -349,6 +427,37 @@ const hookConfig = {
     subagentAudit: false,
     toolFailures: false,
     transcripts: false,
+    hookEvents: false,
+    includeRotatedLogs: false,
+  },
+};
+ingestAll(cpDb, cpConfig);
+assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+ingestAll(cpDb, cpConfig);
+assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+fs.appendFileSync(cpAuditPath, cpLine2 + "\n");
+ingestAll(cpDb, cpConfig);
+assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
+cpDb.close();
+
+// Daily chart: one conversation with two models counts as one session
+const dayDbPath = path.join(tmp, "daily-sessions.db");
+const dayDb = openDatabase(dayDbPath);
+const dayKey = "2026-06-22";
+const insertStop = dayDb.prepare(
+  `INSERT INTO events (
+    ts, event_type, conversation_id, model, input_tokens, output_tokens,
+    source_file, source_line
+  ) VALUES (?, 'stop', ?, ?, ?, ?, ?, ?)`
+);
+insertStop.run(`${dayKey}T10:00:00.000Z`, "conv-multi-model", "model-a", 100, 10, "a.jsonl", 1);
+insertStop.run(`${dayKey}T11:00:00.000Z`, "conv-multi-model", "model-b", 200, 20, "a.jsonl", 2);
+runAllRollups(dayDb);
+const dayReport = buildJsonReport(dayDb);
+const dayRow = dayReport.daily.find((d) => d.day_key === dayKey);
+assert.ok(dayRow, "expected daily row for test day");
+assert.equal(dayRow.sessions, 1);
+dayDb.close();
     hookEvents: true,
     includeRotatedLogs: false,
   },
