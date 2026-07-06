@@ -248,6 +248,80 @@ assert.ok(
 );
 transcriptDb.close();
 
+// Secondary hook logs: session-summary, subagent-audit, tool-failures
+const secondaryHooksDir = path.join(tmp, "secondary-hooks", "logs");
+fs.mkdirSync(secondaryHooksDir, { recursive: true });
+fs.writeFileSync(
+  path.join(secondaryHooksDir, "session-summary.jsonl"),
+  JSON.stringify({
+    timestamp: "2026-06-21T10:00:00.000Z",
+    conversation_id: "conv-session-end",
+    generation_id: "gen-1",
+    duration_ms: 120000,
+    final_status: "completed",
+    cursor_version: "1.0.0",
+    composer_mode: "agent",
+  }) + "\n"
+);
+fs.writeFileSync(
+  path.join(secondaryHooksDir, "subagent-audit.jsonl"),
+  JSON.stringify({
+    timestamp: "2026-06-21T10:05:00.000Z",
+    event: "subagentStop",
+    subagent_type: "explore",
+    task: "search the codebase for auth handlers",
+    status: "completed",
+    duration_ms: 45000,
+    cursor_version: "1.0.0",
+  }) + "\n"
+);
+fs.writeFileSync(
+  path.join(secondaryHooksDir, "tool-failures.jsonl"),
+  JSON.stringify({
+    timestamp: "2026-06-21T10:10:00.000Z",
+    conversation_id: "conv-tool-fail",
+    generation_id: "gen-2",
+    model: "test-model",
+    tool_name: "Shell",
+    error: "command not found: foobar",
+    status: "failed",
+    cursor_version: "1.0.0",
+  }) + "\n"
+);
+const secondaryDbPath = path.join(tmp, "secondary-ingest.db");
+const secondaryDb = openDatabase(secondaryDbPath);
+const secondaryConfig = {
+  cursorHome: path.join(tmp, "secondary-hooks"),
+  dataDir: path.join(tmp, "observatory"),
+  hooksLogsDir: secondaryHooksDir,
+  projectsDir: path.join(tmp, "projects"),
+  ingest: {
+    auditLogs: false,
+    sessionSummary: true,
+    subagentAudit: true,
+    toolFailures: true,
+    transcripts: false,
+    hookEvents: false,
+    includeRotatedLogs: false,
+  },
+};
+const secondarySummary = ingestAll(secondaryDb, secondaryConfig);
+assert.equal(secondarySummary.session.inserted, 1);
+assert.equal(secondarySummary.subagent.inserted, 1);
+assert.equal(secondarySummary.tools.inserted, 1);
+const secondaryEvents = secondaryDb
+  .prepare("SELECT event_type, conversation_id, tool_name, status FROM events ORDER BY id")
+  .all();
+assert.equal(secondaryEvents.length, 3);
+assert.equal(secondaryEvents[0].event_type, "sessionEnd");
+assert.equal(secondaryEvents[0].conversation_id, "conv-session-end");
+assert.equal(secondaryEvents[0].status, "completed");
+assert.equal(secondaryEvents[1].event_type, "subagentStop");
+assert.equal(secondaryEvents[1].status, "completed");
+assert.equal(secondaryEvents[2].event_type, "toolFailure");
+assert.equal(secondaryEvents[2].conversation_id, "conv-tool-fail");
+assert.equal(secondaryEvents[2].tool_name, "Shell");
+secondaryDb.close();
 // Hook events ingest: collector stream at dataDir/events/hook-events.jsonl
 const hookEventsDir = path.join(tmp, "observatory", "events");
 fs.mkdirSync(hookEventsDir, { recursive: true });
