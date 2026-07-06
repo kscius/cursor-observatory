@@ -20,6 +20,7 @@ import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/r
 import { buildDeterministicRecommendations } from "../src/recommend.mjs";
 import { expandHome } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
+import { runCli } from "../src/cli.mjs";
 
 const windowsProject = `C:${path.sep}Development${path.sep}AGORA`;
 assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
@@ -31,6 +32,7 @@ const exampleConfig = JSON.parse(
   fs.readFileSync(new URL("../config.example.json", import.meta.url), "utf8")
 );
 assert.equal(exampleConfig.recommendations?.llm?.enabled, false);
+assert.equal(exampleConfig.ingest?.hookEvents, true);
 
 const home = os.homedir();
 assert.equal(expandHome("~"), home);
@@ -320,6 +322,69 @@ assert.equal(secondaryEvents[2].event_type, "toolFailure");
 assert.equal(secondaryEvents[2].conversation_id, "conv-tool-fail");
 assert.equal(secondaryEvents[2].tool_name, "Shell");
 secondaryDb.close();
+// Hook events ingest: collector stream at dataDir/events/hook-events.jsonl
+const hookEventsDir = path.join(tmp, "observatory", "events");
+fs.mkdirSync(hookEventsDir, { recursive: true });
+const hookEventLine = JSON.stringify({
+  ts: "2026-06-20T13:00:00.000Z",
+  hook_event_name: "stop",
+  conversation_id: "conv-hook-1",
+  model: "collector-model",
+  input_tokens: 300,
+  output_tokens: 30,
+  workspace_roots: ["/c:/Development/HookProject"],
+});
+fs.writeFileSync(path.join(hookEventsDir, "hook-events.jsonl"), hookEventLine + "\n");
+
+const hookDbPath = path.join(tmp, "hook-events.db");
+const hookDb = openDatabase(hookDbPath);
+const hookConfig = {
+  cursorHome: tmp,
+  dataDir: path.join(tmp, "observatory"),
+  hooksLogsDir: hooksDir,
+  projectsDir: path.join(tmp, "projects"),
+  ingest: {
+    auditLogs: false,
+    sessionSummary: false,
+    subagentAudit: false,
+    toolFailures: false,
+    transcripts: false,
+    hookEvents: true,
+    includeRotatedLogs: false,
+  },
+};
+const hookSummary = ingestAll(hookDb, hookConfig);
+assert.equal(hookSummary.hookEvents.inserted, 1);
+assert.equal(
+  hookDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-hook-1").n,
+  1
+);
+assert.equal(
+  hookDb.prepare("SELECT model FROM events WHERE conversation_id = ?").get("conv-hook-1").model,
+  "collector-model"
+);
+
+const hookDisabledDbPath = path.join(tmp, "hook-disabled.db");
+const hookDisabledDb = openDatabase(hookDisabledDbPath);
+const hookDisabledConfig = { ...hookConfig, ingest: { ...hookConfig.ingest, hookEvents: false } };
+const hookDisabledSummary = ingestAll(hookDisabledDb, hookDisabledConfig);
+assert.equal(hookDisabledSummary.hookEvents, null);
+assert.equal(hookDisabledDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
+hookDb.close();
+hookDisabledDb.close();
+
+// CLI smoke tests
+const helpLines = [];
+const origLog = console.log;
+console.log = (...args) => helpLines.push(args.join(" "));
+try {
+  await runCli(["--help"]);
+  assert.ok(helpLines.some((line) => line.includes("cursor-observatory")));
+  assert.ok(helpLines.some((line) => line.includes("dashboard")));
+} finally {
+  console.log = origLog;
+}
+await assert.rejects(() => runCli(["not-a-command"]), /Unknown command: not-a-command/);
 
 retentionDb.close();
 
