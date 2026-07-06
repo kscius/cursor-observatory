@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 
+function normalizeRetentionDays(value) {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 export function expandHome(p) {
   if (!p || typeof p !== "string") return p;
   if (p === "~") return os.homedir();
@@ -25,11 +30,22 @@ export function loadConfig() {
   let raw = {};
   for (const file of candidates) {
     if (!fs.existsSync(file)) continue;
+    let text;
     try {
-      raw = JSON.parse(fs.readFileSync(file, "utf8"));
+      text = fs.readFileSync(file, "utf8");
     } catch (err) {
-      const detail = err instanceof SyntaxError ? err.message : String(err);
-      throw new Error(`Invalid JSON in config file ${file}: ${detail}`);
+      throw new Error(`Cannot read config file ${file}: ${err.message}`);
+    }
+    try {
+      raw = JSON.parse(text);
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        throw new Error(`Invalid JSON in config file ${file}: ${err.message}`);
+      }
+      throw err;
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`Config file ${file} must be a JSON object`);
     }
     break;
   }
@@ -55,7 +71,7 @@ export function loadConfig() {
       includeRotatedLogs: raw.ingest?.includeRotatedLogs !== false,
     },
     retention: {
-      keepRawEventsDays: raw.retention?.keepRawEventsDays ?? 0,
+      keepRawEventsDays: normalizeRetentionDays(raw.retention?.keepRawEventsDays),
     },
     recommendations: {
       enabled: raw.recommendations?.enabled !== false,

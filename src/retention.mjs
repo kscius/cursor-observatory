@@ -1,6 +1,6 @@
 export function applyRetention(db, config) {
-  const days = config.retention?.keepRawEventsDays ?? 0;
-  if (!days || days <= 0) return { pruned: 0, reason: "retention disabled" };
+  const days = Number(config.retention?.keepRawEventsDays ?? 0);
+  if (!Number.isFinite(days) || days <= 0) return { pruned: 0, reason: "retention disabled" };
 
   const result = db
     .prepare(
