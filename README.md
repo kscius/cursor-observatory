@@ -47,6 +47,7 @@ node bin/cursor-observatory.mjs rollup          # recompute aggregates only
 node bin/cursor-observatory.mjs report          # regenerate reports
 node bin/cursor-observatory.mjs report --with-llm # report + OpenAI coaching (needs API key)
 node bin/cursor-observatory.mjs dashboard       # ingest + report + open browser
+node bin/cursor-observatory.mjs dashboard --no-open  # headless / CI (skip browser)
 node bin/cursor-observatory.mjs dashboard --with-llm
 node bin/cursor-observatory.mjs watch           # auto-refresh on file changes
 node bin/cursor-observatory.mjs watch --interval 60
@@ -97,6 +98,8 @@ Copy `collector/observatory-collector.js` and register in `~/.cursor/hooks.json`
 - `stop`
 
 Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl`.
+
+Enable with `"hookEvents": true` in `~/.cursor/observatory/config.json`. If you use the collector, set `"auditLogs": false` (or `"hookEvents": false`) so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`.
 
 ## Configuration
 
