@@ -212,7 +212,7 @@ export function parseTranscriptRecords(lines, meta) {
       ...meta,
       promptIdx,
       text,
-      preview: text.slice(0, 200),
+      preview: sanitizePreview(text, 200),
       hash: hashPrompt(text),
       command: detectSlashCommand(text),
     });

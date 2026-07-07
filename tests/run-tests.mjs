@@ -284,6 +284,9 @@ assert.equal(
 assert.ok(
   transcriptDb.prepare("SELECT preview FROM prompts LIMIT 1").get().preview.includes("fix the login bug")
 );
+assert.ok(
+  !transcriptDb.prepare("SELECT preview FROM prompts LIMIT 1").get().preview.includes("<user_query>")
+);
 transcriptDb.close();
 
 // Incremental ingest: checkpoint resume and dedup on re-ingest
@@ -326,6 +329,23 @@ const cpConfig = {
   projectsDir: path.join(tmp, "projects"),
   ingest: {
     auditLogs: true,
+    sessionSummary: false,
+    subagentAudit: false,
+    toolFailures: false,
+    transcripts: false,
+    hookEvents: false,
+    includeRotatedLogs: false,
+  },
+};
+ingestAll(cpDb, cpConfig);
+assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+ingestAll(cpDb, cpConfig);
+assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+fs.appendFileSync(cpAuditPath, cpLine2 + "\n");
+ingestAll(cpDb, cpConfig);
+assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
+cpDb.close();
+
 // Secondary hook logs: session-summary, subagent-audit, tool-failures
 const secondaryHooksDir = path.join(tmp, "secondary-hooks", "logs");
 fs.mkdirSync(secondaryHooksDir, { recursive: true });
@@ -427,37 +447,6 @@ const hookConfig = {
     subagentAudit: false,
     toolFailures: false,
     transcripts: false,
-    hookEvents: false,
-    includeRotatedLogs: false,
-  },
-};
-ingestAll(cpDb, cpConfig);
-assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
-ingestAll(cpDb, cpConfig);
-assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
-fs.appendFileSync(cpAuditPath, cpLine2 + "\n");
-ingestAll(cpDb, cpConfig);
-assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
-cpDb.close();
-
-// Daily chart: one conversation with two models counts as one session
-const dayDbPath = path.join(tmp, "daily-sessions.db");
-const dayDb = openDatabase(dayDbPath);
-const dayKey = "2026-06-22";
-const insertStop = dayDb.prepare(
-  `INSERT INTO events (
-    ts, event_type, conversation_id, model, input_tokens, output_tokens,
-    source_file, source_line
-  ) VALUES (?, 'stop', ?, ?, ?, ?, ?, ?)`
-);
-insertStop.run(`${dayKey}T10:00:00.000Z`, "conv-multi-model", "model-a", 100, 10, "a.jsonl", 1);
-insertStop.run(`${dayKey}T11:00:00.000Z`, "conv-multi-model", "model-b", 200, 20, "a.jsonl", 2);
-runAllRollups(dayDb);
-const dayReport = buildJsonReport(dayDb);
-const dayRow = dayReport.daily.find((d) => d.day_key === dayKey);
-assert.ok(dayRow, "expected daily row for test day");
-assert.equal(dayRow.sessions, 1);
-dayDb.close();
     hookEvents: true,
     includeRotatedLogs: false,
   },
@@ -481,6 +470,25 @@ assert.equal(hookDisabledSummary.hookEvents, null);
 assert.equal(hookDisabledDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
 hookDb.close();
 hookDisabledDb.close();
+
+// Daily chart: one conversation with two models counts as one session
+const dayDbPath = path.join(tmp, "daily-sessions.db");
+const dayDb = openDatabase(dayDbPath);
+const dayKey = "2026-06-22";
+const insertStop = dayDb.prepare(
+  `INSERT INTO events (
+    ts, event_type, conversation_id, model, input_tokens, output_tokens,
+    source_file, source_line
+  ) VALUES (?, 'stop', ?, ?, ?, ?, ?, ?)`
+);
+insertStop.run(`${dayKey}T10:00:00.000Z`, "conv-multi-model", "model-a", 100, 10, "a.jsonl", 1);
+insertStop.run(`${dayKey}T11:00:00.000Z`, "conv-multi-model", "model-b", 200, 20, "a.jsonl", 2);
+runAllRollups(dayDb);
+const dayReport = buildJsonReport(dayDb);
+const dayRow = dayReport.daily.find((d) => d.day_key === dayKey);
+assert.ok(dayRow, "expected daily row for test day");
+assert.equal(dayRow.sessions, 1);
+dayDb.close();
 
 // CLI smoke tests
 const helpLines = [];
