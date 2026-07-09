@@ -14,6 +14,7 @@ import {
   parseTranscriptRecords,
   primaryWorkspace,
   projectFromTranscriptPath,
+  stripBom,
   unwrapAuditEntry,
 } from "./parse.mjs";
 
@@ -21,7 +22,8 @@ function* readLinesFrom(filePath, startLine = 0) {
   const content = fs.readFileSync(filePath, "utf8");
   const lines = content.split(/\r?\n/);
   for (let i = startLine; i < lines.length; i++) {
-    if (lines[i].trim()) yield { line: lines[i], lineNo: i + 1 };
+    const line = stripBom(lines[i]);
+    if (line.trim()) yield { line, lineNo: i + 1 };
   }
 }
 
@@ -310,6 +312,12 @@ export function ingestHookEvents(db, dataDir) {
 
 export function ingestAll(db, config) {
   const summary = { audit: null, session: null, subagent: null, tools: null, hookEvents: null, transcripts: null };
+
+  if (config.ingest.auditLogs && config.ingest.hookEvents) {
+    console.warn(
+      "[observatory] auditLogs and hookEvents are both enabled; the same stop events may be counted twice. Disable one in ~/.cursor/observatory/config.json (see README)."
+    );
+  }
 
   if (config.ingest.auditLogs) {
     summary.audit = ingestAuditLogs(
