@@ -7,10 +7,15 @@ import { applyRetention } from "./retention.mjs";
 
 function debounce(fn, ms) {
   let t;
-  return (...args) => {
+  const debounced = (...args) => {
     clearTimeout(t);
     t = setTimeout(() => fn(...args), ms);
   };
+  debounced.cancel = () => {
+    clearTimeout(t);
+    t = undefined;
+  };
+  return debounced;
 }
 
 export function startWatch(config, db, { intervalMs = 30000, onRefresh } = {}) {
@@ -54,6 +59,7 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh } = {}) {
   console.log("Press Ctrl+C to stop.");
 
   return () => {
+    debounced.cancel();
     clearInterval(timer);
     for (const w of watchers) w.close();
   };

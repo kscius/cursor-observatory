@@ -19,11 +19,13 @@ import {
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase } from "../src/db.mjs";
+import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
+import { runAllRollups } from "../src/aggregate.mjs";
 import { ingestAll } from "../src/ingest.mjs";
 import { runAllRollups, rollupSessions } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
 import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
-import { expandHome } from "../src/config.mjs";
+import { expandHome, loadConfig } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
 import { runCli } from "../src/cli.mjs";
 
@@ -583,6 +585,85 @@ assert.equal(hookDisabledSummary.hookEvents, null);
 assert.equal(hookDisabledDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0);
 hookDb.close();
 hookDisabledDb.close();
+
+// loadConfig rejects invalid JSON in repo config.json (skipped when user config exists)
+const userConfigPath = path.join(home, ".cursor", "observatory", "config.json");
+const repoConfigPath = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "config.json");
+if (!fs.existsSync(userConfigPath)) {
+  const hadRepoConfig = fs.existsSync(repoConfigPath);
+  const savedRepoConfig = hadRepoConfig ? fs.readFileSync(repoConfigPath, "utf8") : null;
+  try {
+    fs.writeFileSync(repoConfigPath, "{ not valid json\n");
+    assert.throws(() => loadConfig(), /Invalid JSON in config file/);
+    fs.writeFileSync(repoConfigPath, "[]");
+    assert.throws(() => loadConfig(), /must be a JSON object/);
+  } finally {
+    if (hadRepoConfig) fs.writeFileSync(repoConfigPath, savedRepoConfig);
+    else if (fs.existsSync(repoConfigPath)) fs.unlinkSync(repoConfigPath);
+  }
+}
+
+// ingestAll warns when audit and hook-event streams are both enabled
+const warnLines = [];
+const origWarn = console.warn;
+console.warn = (...args) => warnLines.push(args.join(" "));
+try {
+  const warnDb = openDatabase(path.join(tmp, "dual-stream.db"));
+  ingestAll(warnDb, {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: hooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: true,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: true,
+      includeRotatedLogs: false,
+    },
+  });
+  warnDb.close();
+  assert.ok(
+    warnLines.some((line) => line.includes("auditLogs and hookEvents are both enabled")),
+    "expected dual-stream ingest warning"
+  );
+} finally {
+  console.warn = origWarn;
+}
+
+// BOM-prefixed JSONL lines ingest correctly
+const bomAuditLine = JSON.stringify({
+  timestamp: "2026-06-21T12:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-bom",
+      hook_event_name: "stop",
+      model: "bom-model",
+      input_tokens: 11,
+      output_tokens: 2,
+    }),
+  },
+});
+const bomAuditDefault = path.join(hooksDir, "agent-audit.jsonl");
+const hadDefaultAudit = fs.existsSync(bomAuditDefault);
+const savedDefaultAudit = hadDefaultAudit ? fs.readFileSync(bomAuditDefault, "utf8") : null;
+const bomDirectDb = openDatabase(path.join(tmp, "bom-direct.db"));
+try {
+  fs.writeFileSync(bomAuditDefault, "\uFEFF" + bomAuditLine + "\n");
+  const bomDirect = ingestAuditLogs(bomDirectDb, hooksDir, false);
+  assert.equal(bomDirect.inserted, 1);
+  assert.equal(
+    bomDirectDb.prepare("SELECT conversation_id FROM events WHERE conversation_id = ?").get("conv-bom")
+      .conversation_id,
+    "conv-bom"
+  );
+} finally {
+  if (hadDefaultAudit) fs.writeFileSync(bomAuditDefault, savedDefaultAudit);
+  else if (fs.existsSync(bomAuditDefault)) fs.unlinkSync(bomAuditDefault);
+}
+bomDirectDb.close();
 
 // Daily chart: one conversation with two models counts as one session
 const dayDbPath = path.join(tmp, "daily-sessions.db");
