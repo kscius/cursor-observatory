@@ -41,7 +41,7 @@ This will:
 
 ```bash
 node bin/cursor-observatory.mjs ingest          # incremental ingest + rollup
-node bin/cursor-observatory.mjs ingest --full   # re-read all log files
+node bin/cursor-observatory.mjs ingest --full   # clear checkpoints & rescan JSONL from line 0 (existing rows deduped)
 node bin/cursor-observatory.mjs ingest --no-rollup  # ingest only (faster)
 node bin/cursor-observatory.mjs rollup          # recompute aggregates only
 node bin/cursor-observatory.mjs report          # regenerate reports

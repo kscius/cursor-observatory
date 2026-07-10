@@ -5,6 +5,8 @@ import path from "node:path";
 import {
   decodeProjectSlug,
   extractUserQuery,
+  extractUserText,
+  hashPrompt,
   sanitizePreview,
   normalizeProjectPath,
   shortProjectName,
@@ -19,14 +21,11 @@ import {
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase } from "../src/db.mjs";
-import { ingestAll } from "../src/ingest.mjs";
-import { runAllRollups, rollupBehavior } from "../src/aggregate.mjs";
 import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
-import { runAllRollups } from "../src/aggregate.mjs";
-import { ingestAll } from "../src/ingest.mjs";
-import { runAllRollups, rollupSessions } from "../src/aggregate.mjs";
+import { runAllRollups, rollupBehavior, rollupSessions } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
 import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
+import { enrichWithLlm } from "../src/llm.mjs";
 import { expandHome, loadConfig } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
 import { runCli } from "../src/cli.mjs";
@@ -39,6 +38,12 @@ assert.equal(projectPathContext("c:\\Development\\AGORA"), "C:/Development");
 
 assert.equal(stripBom("\uFEFFhello"), "hello");
 assert.equal(stripBom("hello"), "hello");
+assert.equal(extractUserText("plain"), "plain");
+assert.equal(extractUserText([{ type: "text", text: "a" }, { type: "tool_use" }]), "a");
+assert.equal(extractUserText([{ type: "text", text: "x" }, { type: "text", text: "y" }]), "x\ny");
+assert.equal(hashPrompt("same"), hashPrompt("same"));
+assert.notEqual(hashPrompt("a"), hashPrompt("b"));
+assert.match(sanitizePreview("x".repeat(200), 10), /…$/);
 assert.equal(primaryWorkspace(["/c:/Development/Foo"]), `C:${path.sep}Development${path.sep}Foo`);
 assert.equal(
   projectFromTranscriptPath("C:/Users/x/.cursor/projects/c-Development-Demo/agent-transcripts/x.jsonl"),
@@ -685,6 +690,55 @@ const dayRow = dayReport.daily.find((d) => d.day_key === dayKey);
 assert.ok(dayRow, "expected daily row for test day");
 assert.equal(dayRow.sessions, 1);
 dayDb.close();
+
+// daily_stats.prompt_count must respect model dimension (not duplicate across models)
+const promptCountDbPath = path.join(tmp, "daily-prompt-count.db");
+const promptCountDb = openDatabase(promptCountDbPath);
+const promptDay = "2026-06-22";
+const insertPromptStop = promptCountDb.prepare(
+  `INSERT INTO events (
+    ts, event_type, conversation_id, model, input_tokens, output_tokens,
+    source_file, source_line
+  ) VALUES (?, 'stop', ?, ?, 10, 1, 'a.jsonl', ?)`
+);
+insertPromptStop.run(`${promptDay}T10:00:00.000Z`, "conv-a", "model-a", 1);
+insertPromptStop.run(`${promptDay}T11:00:00.000Z`, "conv-b", "model-b", 2);
+const insertPrompt = promptCountDb.prepare(
+  `INSERT INTO prompts (conversation_id, project, prompt_idx, ts, preview, source)
+   VALUES (?, '', 0, ?, ?, 'transcript')`
+);
+insertPrompt.run("conv-a", `${promptDay}T10:05:00.000Z`, "prompt a");
+insertPrompt.run("conv-b", `${promptDay}T11:05:00.000Z`, "prompt b");
+runAllRollups(promptCountDb);
+const promptCountRows = promptCountDb
+  .prepare(`SELECT model, prompt_count FROM daily_stats WHERE day_key = ? ORDER BY model`)
+  .all(promptDay);
+assert.equal(promptCountRows.length, 2);
+assert.equal(promptCountRows[0].model, "model-a");
+assert.equal(promptCountRows[0].prompt_count, 1);
+assert.equal(promptCountRows[1].model, "model-b");
+assert.equal(promptCountRows[1].prompt_count, 1);
+promptCountDb.close();
+
+// enrichWithLlm no-ops without API key (even when enabled)
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    const llmReport = { totals: {}, behavior: {}, sessions: [], topTools: [], toolFailures: [] };
+    const llmDet = buildDeterministicRecommendations(llmReport);
+    const llmOut = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: false,
+      cacheDir: path.join(tmp, "llm-cache"),
+    });
+    assert.equal(llmOut, llmDet);
+    assert.equal(llmOut.source, "deterministic");
+  } finally {
+    if (savedApiKey !== undefined) process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
 
 // Daily chart: last 30 days, not the oldest 30
 const windowDbPath = path.join(tmp, "daily-window.db");

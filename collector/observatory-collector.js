@@ -28,7 +28,7 @@ async function main() {
   }
 
   const entry = {
-    ts: new Date().toISOString(),
+    ts: payload.timestamp || payload.ts || new Date().toISOString(),
     hook_event_name: payload.hook_event_name || "unknown",
     conversation_id: payload.conversation_id || payload.session_id || null,
     generation_id: payload.generation_id || null,

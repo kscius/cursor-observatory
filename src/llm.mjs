@@ -85,6 +85,9 @@ function buildSectionPrompt(sectionKey, sectionData, reportSummary) {
 export async function enrichWithLlm(report, deterministic, config) {
   if (!config?.enabled) return deterministic;
 
+  const apiKeyEnv = config.apiKeyEnv || "OPENAI_API_KEY";
+  if (!process.env[apiKeyEnv]) return deterministic;
+
   const cacheDir = path.join(config.cacheDir || "", "cache");
   const cache = config.useCache !== false ? readCache(cacheDir) : {};
   const llmSections = {};
