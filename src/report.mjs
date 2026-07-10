@@ -1016,12 +1016,23 @@ window.__REPORT__ = ${jsonEmbed};
 
   function exportSessionsCsv() {
     const visible = [...document.querySelectorAll('.session-row')].filter(r => r.style.display !== 'none');
-    const headers = ['conversation_id','project','started_at','model','input_tokens','output_tokens','prompt_count','fluency_score','archetype','first_prompt_preview'];
-    const lines = [headers.join(',')];
+    const columns = [
+      ['conversation_id', 'conversation_id'],
+      ['project', 'project'],
+      ['started_at', 'started_at'],
+      ['model', 'model_primary'],
+      ['input_tokens', 'total_input_tokens'],
+      ['output_tokens', 'total_output_tokens'],
+      ['prompt_count', 'prompt_count'],
+      ['fluency_score', 'fluency_score'],
+      ['archetype', 'archetype'],
+      ['first_prompt_preview', 'first_prompt_preview'],
+    ];
+    const lines = [columns.map(([h]) => h).join(',')];
     visible.forEach(row => {
       const s = sessions[Number(row.dataset.index)];
       if (!s) return;
-      lines.push(headers.map(h => csvEscape(s[h])).join(','));
+      lines.push(columns.map(([, key]) => csvEscape(s[key])).join(','));
     });
     const blob = new Blob([lines.join('\\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
