@@ -31,5 +31,6 @@ Non-obvious caveats:
   never opens a browser.
 - Output is written outside the repo, under `~/.cursor/observatory/`
   (DB at `observatory.db`, reports under `reports/latest.html`).
-- LLM coaching is enabled in `config.example.json` but silently no-ops without
-  `OPENAI_API_KEY`; no key is required for normal operation.
+- LLM coaching is **opt-in** (`recommendations.llm.enabled` is `false` in
+  `config.example.json`). Enable via `--with-llm` or config; without
+  `OPENAI_API_KEY` it silently no-ops. No key is required for normal operation.
