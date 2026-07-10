@@ -21,6 +21,8 @@ import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase } from "../src/db.mjs";
 import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
 import { runAllRollups } from "../src/aggregate.mjs";
+import { ingestAll } from "../src/ingest.mjs";
+import { runAllRollups, rollupSessions } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
 import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
 import { expandHome, loadConfig } from "../src/config.mjs";
@@ -169,6 +171,94 @@ assert.ok(Array.isArray(eventMap["conv-test-1"]));
 assert.ok(eventMap["conv-test-1"].length >= 1);
 assert.equal(eventMap["conv-test-1"][0].type, "stop");
 
+// Session event trace cap (80 events per conversation)
+const capDbPath = path.join(tmp, "session-cap.db");
+const capDb = openDatabase(capDbPath);
+const capConv = "conv-cap-test";
+const insertCapEvent = capDb.prepare(
+  `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+   VALUES (?, 'preToolUse', ?, ?, ?)`
+);
+for (let i = 0; i < 85; i++) {
+  insertCapEvent.run(
+    `2026-06-20T10:00:${String(i).padStart(2, "0")}.000Z`,
+    capConv,
+    "cap.jsonl",
+    i + 1
+  );
+}
+const capMap = buildSessionEventMap(capDb, [{ conversation_id: capConv }]);
+assert.equal(capMap[capConv].length, 80);
+assert.equal(capMap[capConv][0].type, "preToolUse");
+capDb.close();
+
+// rollupSessions: token totals only from stop events; tool_count from tool hooks
+const rollupDbPath = path.join(tmp, "rollup-sessions.db");
+const rollupDb = openDatabase(rollupDbPath);
+const rollupConv = "conv-rollup-semantics";
+const insertEvent = rollupDb.prepare(
+  `INSERT INTO events (
+    ts, event_type, conversation_id, model, input_tokens, output_tokens,
+    duration_ms, source_file, source_line
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+);
+insertEvent.run(
+  "2026-06-20T10:00:00.000Z",
+  "stop",
+  rollupConv,
+  "model-a",
+  100,
+  10,
+  null,
+  "r.jsonl",
+  1
+);
+insertEvent.run(
+  "2026-06-20T10:05:00.000Z",
+  "stop",
+  rollupConv,
+  "model-a",
+  100,
+  10,
+  null,
+  "r.jsonl",
+  2
+);
+insertEvent.run(
+  "2026-06-20T10:10:00.000Z",
+  "stop",
+  rollupConv,
+  "model-b",
+  50,
+  5,
+  null,
+  "r.jsonl",
+  3
+);
+insertEvent.run(
+  "2026-06-20T10:15:00.000Z",
+  "sessionEnd",
+  rollupConv,
+  null,
+  9999,
+  9999,
+  5000,
+  "r.jsonl",
+  4
+);
+insertEvent.run("2026-06-20T10:20:00.000Z", "preToolUse", rollupConv, null, null, null, null, "r.jsonl", 5);
+insertEvent.run("2026-06-20T10:25:00.000Z", "preToolUse", rollupConv, null, null, null, null, "r.jsonl", 6);
+rollupSessions(rollupDb);
+const rollupRow = rollupDb
+  .prepare("SELECT * FROM sessions WHERE conversation_id = ?")
+  .get(rollupConv);
+assert.equal(rollupRow.total_input_tokens, 250);
+assert.equal(rollupRow.total_output_tokens, 25);
+assert.equal(rollupRow.tool_count, 2);
+assert.equal(rollupRow.duration_ms, 5000);
+assert.equal(rollupRow.model_primary, "model-a");
+rollupDb.close();
+
 // Retention: prune events older than N days
 const retentionDbPath = path.join(tmp, "retention.db");
 const retentionDb = openDatabase(retentionDbPath);
@@ -191,11 +281,36 @@ const invalidDays = applyRetention(retentionDb, { retention: { keepRawEventsDays
 assert.equal(invalidDays.pruned, 0);
 assert.equal(invalidDays.reason, "retention disabled");
 const pruned = applyRetention(retentionDb, { retention: { keepRawEventsDays: 30 } });
+assert.equal(pruned.prunedEvents, 1);
+assert.equal(pruned.prunedPrompts, 0);
 assert.equal(pruned.pruned, 1);
 assert.equal(
   retentionDb.prepare("SELECT COUNT(*) AS n FROM events").get().n,
   1
 );
+
+// Retention: prune old prompts alongside events
+const promptRetentionDb = openDatabase(path.join(tmp, "retention-prompts.db"));
+promptRetentionDb
+  .prepare(
+    `INSERT INTO prompts (conversation_id, prompt_idx, ts, preview, source)
+     VALUES (?, ?, ?, ?, ?)`
+  )
+  .run("old-conv", 0, "2020-01-01T00:00:00.000Z", "old prompt", "transcript");
+promptRetentionDb
+  .prepare(
+    `INSERT INTO prompts (conversation_id, prompt_idx, ts, preview, source)
+     VALUES (?, ?, ?, ?, ?)`
+  )
+  .run("new-conv", 0, new Date().toISOString(), "new prompt", "transcript");
+const promptPruned = applyRetention(promptRetentionDb, { retention: { keepRawEventsDays: 30 } });
+assert.equal(promptPruned.prunedPrompts, 1);
+assert.equal(promptPruned.prunedEvents, 0);
+assert.equal(
+  promptRetentionDb.prepare("SELECT preview FROM prompts").get().preview,
+  "new prompt"
+);
+promptRetentionDb.close();
 
 // Prune + rollup: session aggregates reflect retained events only
 const pruneDbPath = path.join(tmp, "prune-rollup.db");

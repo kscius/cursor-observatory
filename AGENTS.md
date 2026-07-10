@@ -26,8 +26,9 @@ Non-obvious caveats:
   pipeline, seed sample events into `~/.cursor/hooks/logs/agent-audit.jsonl` (one JSON
   object per line, each wrapped as `{"timestamp":...,"data":{"raw":"<stringified stop event>"}}`),
   then run the `dashboard` command.
-- **Always pass `--no-open` for `dashboard`/`report` in headless environments** —
-  otherwise the CLI tries to launch a browser via `xdg-open`.
+- **Always pass `--no-open` for `dashboard` in headless environments** —
+  otherwise the CLI tries to launch a browser via `xdg-open`. The `report` command
+  never opens a browser.
 - Output is written outside the repo, under `~/.cursor/observatory/`
   (DB at `observatory.db`, reports under `reports/latest.html`).
 - LLM coaching is enabled in `config.example.json` but silently no-ops without
