@@ -184,18 +184,20 @@ export function buildJsonReport(db) {
     ),
     daily: queryAll(
       db,
-      `SELECT d.day_key,
-              SUM(d.input_tokens) AS input_tokens,
-              SUM(d.output_tokens) AS output_tokens,
-              (SELECT COUNT(DISTINCT e.conversation_id)
-               FROM events e
-               WHERE e.event_type = 'stop'
-                 AND e.conversation_id IS NOT NULL
-                 AND substr(e.ts, 1, 10) = d.day_key) AS sessions
-       FROM daily_stats d
-       GROUP BY d.day_key
-       ORDER BY d.day_key ASC
-       LIMIT 30`
+      `SELECT day_key, input_tokens, output_tokens, sessions FROM (
+         SELECT d.day_key,
+                SUM(d.input_tokens) AS input_tokens,
+                SUM(d.output_tokens) AS output_tokens,
+                (SELECT COUNT(DISTINCT e.conversation_id)
+                 FROM events e
+                 WHERE e.event_type = 'stop'
+                   AND e.conversation_id IS NOT NULL
+                   AND substr(e.ts, 1, 10) = d.day_key) AS sessions
+         FROM daily_stats d
+         GROUP BY d.day_key
+         ORDER BY d.day_key DESC
+         LIMIT 30
+       ) ORDER BY day_key ASC`
     ),
     hourlyToday: queryAll(
       db,
@@ -208,11 +210,13 @@ export function buildJsonReport(db) {
     ),
     behaviorTrend: queryAll(
       db,
-      `SELECT period_key AS day, fluency_score, archetype, real_prompt_count
-       FROM behavior_snapshots
-       WHERE period='daily'
-       ORDER BY period_key ASC
-       LIMIT 90`
+      `SELECT day, fluency_score, archetype, real_prompt_count FROM (
+         SELECT period_key AS day, fluency_score, archetype, real_prompt_count
+         FROM behavior_snapshots
+         WHERE period='daily'
+         ORDER BY period_key DESC
+         LIMIT 90
+       ) ORDER BY day ASC`
     ),
     recentSessions,
     topTools: queryAll(
