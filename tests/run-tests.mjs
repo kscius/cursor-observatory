@@ -20,7 +20,7 @@ import {
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase } from "../src/db.mjs";
 import { ingestAll } from "../src/ingest.mjs";
-import { runAllRollups } from "../src/aggregate.mjs";
+import { runAllRollups, rollupBehavior } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
 import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
 import { expandHome } from "../src/config.mjs";
@@ -489,6 +489,123 @@ const dayRow = dayReport.daily.find((d) => d.day_key === dayKey);
 assert.ok(dayRow, "expected daily row for test day");
 assert.equal(dayRow.sessions, 1);
 dayDb.close();
+
+// Daily chart: last 30 days, not the oldest 30
+const windowDbPath = path.join(tmp, "daily-window.db");
+const windowDb = openDatabase(windowDbPath);
+const windowDays = [];
+const windowInsert = windowDb.prepare(
+  `INSERT INTO daily_stats (day_key, project, model, event_count, generation_count, input_tokens, output_tokens, session_count, prompt_count)
+   VALUES (?, '', '', 1, 1, 100, 10, 1, 0)`
+);
+for (let i = 0; i < 35; i++) {
+  const d = new Date("2026-01-01T00:00:00.000Z");
+  d.setUTCDate(d.getUTCDate() + i);
+  const day = d.toISOString().slice(0, 10);
+  windowDays.push(day);
+  windowInsert.run(day);
+}
+const windowReport = buildJsonReport(windowDb);
+assert.equal(windowReport.daily.length, 30);
+assert.equal(windowReport.daily[0].day_key, windowDays[5]);
+assert.equal(windowReport.daily[29].day_key, windowDays[34]);
+windowDb.close();
+
+// Behavior trend: last 90 daily snapshots, chronological
+const trendDbPath = path.join(tmp, "behavior-window.db");
+const trendDb = openDatabase(trendDbPath);
+const trendDays = [];
+const trendInsert = trendDb.prepare(
+  `INSERT INTO behavior_snapshots (period, period_key, fluency_score, archetype, real_prompt_count, session_count, computed_at)
+   VALUES ('daily', ?, 50, 'Sprinter', 1, 0, datetime('now'))`
+);
+for (let i = 0; i < 100; i++) {
+  const d = new Date("2026-01-01T00:00:00.000Z");
+  d.setUTCDate(d.getUTCDate() + i);
+  const day = d.toISOString().slice(0, 10);
+  trendDays.push(day);
+  trendInsert.run(day);
+}
+const trendReport = buildJsonReport(trendDb);
+assert.equal(trendReport.behaviorTrend.length, 90);
+assert.equal(trendReport.behaviorTrend[0].day, trendDays[10]);
+assert.equal(trendReport.behaviorTrend[89].day, trendDays[99]);
+trendDb.close();
+
+// rollupBehavior purges stale daily behavior_snapshots before rebuild
+const purgeDbPath = path.join(tmp, "behavior-purge.db");
+const purgeDb = openDatabase(purgeDbPath);
+purgeDb
+  .prepare(
+    `INSERT INTO behavior_snapshots (period, period_key, fluency_score, archetype, real_prompt_count, session_count, computed_at)
+     VALUES ('daily', '2020-01-01', 50, 'Sprinter', 1, 0, datetime('now'))`
+  )
+  .run();
+rollupBehavior(purgeDb);
+assert.equal(
+  purgeDb
+    .prepare("SELECT COUNT(*) AS n FROM behavior_snapshots WHERE period='daily' AND period_key='2020-01-01'")
+    .get().n,
+  0
+);
+purgeDb.close();
+
+// Log rotation: truncated audit file drops stale events and re-ingests
+const rotateDir = path.join(tmp, "rotate");
+fs.mkdirSync(rotateDir, { recursive: true });
+const rotateAudit = path.join(rotateDir, "agent-audit.jsonl");
+const rotateLine1 = JSON.stringify({
+  timestamp: "2026-06-20T12:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-rotate-old",
+      hook_event_name: "stop",
+      model: "old-model",
+      input_tokens: 10,
+      output_tokens: 1,
+      workspace_roots: ["/c:/Development/Rotate"],
+    }),
+  },
+});
+fs.writeFileSync(rotateAudit, rotateLine1 + "\n");
+const rotateDbPath = path.join(tmp, "rotate.db");
+const rotateDb = openDatabase(rotateDbPath);
+const rotateConfig = {
+  cursorHome: tmp,
+  dataDir: path.join(tmp, "observatory-rotate"),
+  hooksLogsDir: rotateDir,
+  projectsDir: path.join(tmp, "projects"),
+  ingest: {
+    auditLogs: true,
+    sessionSummary: false,
+    subagentAudit: false,
+    toolFailures: false,
+    transcripts: false,
+    hookEvents: false,
+    includeRotatedLogs: false,
+  },
+};
+ingestAll(rotateDb, rotateConfig);
+assert.equal(rotateDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+assert.equal(rotateDb.prepare("SELECT conversation_id FROM events").get().conversation_id, "conv-rotate-old");
+const rotateLine2 = JSON.stringify({
+  timestamp: "2026-06-21T12:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-rotate-new",
+      hook_event_name: "stop",
+      model: "m",
+      input_tokens: 1,
+      output_tokens: 0,
+      workspace_roots: [],
+    }),
+  },
+});
+fs.writeFileSync(rotateAudit, rotateLine2 + "\n");
+ingestAll(rotateDb, rotateConfig);
+assert.equal(rotateDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+assert.equal(rotateDb.prepare("SELECT conversation_id FROM events").get().conversation_id, "conv-rotate-new");
+rotateDb.close();
 
 // CLI smoke tests
 const helpLines = [];

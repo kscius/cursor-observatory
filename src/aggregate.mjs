@@ -163,6 +163,8 @@ function aggregateToolCount(db, dayPrefix = null) {
 }
 
 export function rollupBehavior(db) {
+  db.exec(`DELETE FROM behavior_snapshots WHERE period = 'daily'`);
+
   const prompts = queryAll(db, `SELECT preview FROM prompts ORDER BY id`);
   const sessions = queryAll(db, `SELECT COUNT(*) AS c FROM sessions`)[0]?.c || 0;
   const toolCount = aggregateToolCount(db);

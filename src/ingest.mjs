@@ -31,7 +31,11 @@ function ingestJsonlFile(db, filePath, mapFn) {
   const stat = fs.statSync(filePath);
   const cp = getCheckpoint(db, filePath);
   let startLine = cp.last_line;
-  if (stat.size < cp.last_size) startLine = 0;
+  if (stat.size < cp.last_size) {
+    // Log rotation or truncate: line numbers collide with the previous file.
+    db.prepare(`DELETE FROM events WHERE source_file = ?`).run(filePath);
+    startLine = 0;
+  }
   let inserted = 0;
   let skipped = 0;
   let maxLine = startLine;
