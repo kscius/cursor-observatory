@@ -144,10 +144,13 @@ export async function runCli(argv) {
   if (cmd === "dashboard") {
     const full = rest.includes("--full");
     const withLlm = rest.includes("--with-llm") || config.recommendations?.llm?.enabled;
-    if (full) db.exec(`DELETE FROM ingest_checkpoints`);
+    if (full) {
+      db.exec(`DELETE FROM ingest_checkpoints`);
+      console.log("Full ingest: checkpoints cleared");
+    }
     console.log("Dashboard: ingest → rollup → report");
     const summary = ingestAll(db, config);
-    console.log("Ingest:", JSON.stringify(summary));
+    console.log("Ingest:", JSON.stringify(summary, null, 2));
     applyRetention(db, config);
     const roll = runAllRollups(db);
     console.log(`Sessions: ${roll.sessions}`);

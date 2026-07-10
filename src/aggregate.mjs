@@ -137,6 +137,13 @@ export function rollupTimeBuckets(db) {
       SELECT COUNT(*) FROM prompts p
       WHERE substr(COALESCE(p.ts, ''), 1, 10) = daily_stats.day_key
         AND COALESCE(p.project, '') = daily_stats.project
+        AND EXISTS (
+          SELECT 1 FROM events e
+          WHERE e.conversation_id = p.conversation_id
+            AND substr(COALESCE(e.ts, ''), 1, 10) = daily_stats.day_key
+            AND COALESCE(e.project, '') = daily_stats.project
+            AND COALESCE(e.model, '') = daily_stats.model
+        )
     )
   `);
 }
