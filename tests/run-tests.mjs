@@ -20,7 +20,7 @@ import {
   detectSlashCommand,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
-import { openDatabase, insertEvent } from "../src/db.mjs";
+import { openDatabase, insertEvent as insertEventRow } from "../src/db.mjs";
 import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
 import { runAllRollups, rollupBehavior, rollupSessions } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap, writeReports } from "../src/report.mjs";
@@ -909,13 +909,13 @@ const insertEv = {
   sourceLine: 1,
   payloadJson: "{}",
 };
-assert.equal(insertEvent(insertDb, insertEv), 1);
-assert.equal(insertEvent(insertDb, insertEv), 0);
+assert.equal(insertEventRow(insertDb, insertEv), 1);
+assert.equal(insertEventRow(insertDb, insertEv), 0);
 insertDb.close();
 
 // Atomic latest.* report writes
 const reportDb = openDatabase(path.join(tmp, "report-write.db"));
-insertEvent(reportDb, {
+insertEventRow(reportDb, {
   ...insertEv,
   conversationId: "conv-html",
   sourceFile: "/tmp/html.jsonl",
