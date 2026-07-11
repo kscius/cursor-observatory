@@ -3,7 +3,7 @@ import path from "node:path";
 const BOM = "\uFEFF";
 
 export function stripBom(s) {
-  return typeof s === "string" ? s.replace(/^\uFEFF/, "") : s;
+  return typeof s === "string" && s.startsWith(BOM) ? s.slice(1) : s;
 }
 
 export function decodeProjectSlug(slug) {
@@ -93,7 +93,7 @@ export function unwrapAuditEntry(outer) {
   };
 }
 
-function num(v) {
+export function num(v) {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;

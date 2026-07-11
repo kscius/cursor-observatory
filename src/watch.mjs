@@ -19,17 +19,32 @@ function debounce(fn, ms) {
 }
 
 export function startWatch(config, db, { intervalMs = 30000, onRefresh } = {}) {
+  let inFlight = false;
+  let pending = false;
+
   const refresh = async () => {
+    if (inFlight) {
+      pending = true;
+      return;
+    }
+    inFlight = true;
     try {
-      ingestAll(db, config);
-      runAllRollups(db);
-      applyRetention(db, config);
-      const withLlm = config.recommendations?.llm?.enabled;
-      const paths = await writeReports(db, config.reportsDir, config, { withLlm });
-      onRefresh?.(paths);
-      console.log(`[watch] refreshed ${new Date().toISOString()}`);
-    } catch (err) {
-      console.error("[watch] error:", err.message || err);
+      do {
+        pending = false;
+        try {
+          ingestAll(db, config);
+          runAllRollups(db);
+          applyRetention(db, config);
+          const withLlm = config.recommendations?.llm?.enabled;
+          const paths = await writeReports(db, config.reportsDir, config, { withLlm });
+          await onRefresh?.(paths);
+          console.log(`[watch] refreshed ${new Date().toISOString()}`);
+        } catch (err) {
+          console.error("[watch] error:", err.message || err);
+        }
+      } while (pending);
+    } finally {
+      inFlight = false;
     }
   };
 
