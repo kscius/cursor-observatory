@@ -1213,8 +1213,14 @@ export async function writeReports(db, reportsDir, config = {}, options = {}) {
 
   fs.writeFileSync(htmlPath, html, "utf8");
   fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), "utf8");
-  fs.writeFileSync(latestHtml, html, "utf8");
-  fs.writeFileSync(latestJson, JSON.stringify(data, null, 2), "utf8");
+  atomicWriteFile(latestHtml, html);
+  atomicWriteFile(latestJson, JSON.stringify(data, null, 2));
 
   return { htmlPath, jsonPath, latestHtml, latestJson };
+}
+
+function atomicWriteFile(targetPath, contents) {
+  const tmpPath = `${targetPath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, contents, "utf8");
+  fs.renameSync(tmpPath, targetPath);
 }

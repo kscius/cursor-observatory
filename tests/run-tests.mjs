@@ -20,15 +20,18 @@ import {
   detectSlashCommand,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
-import { openDatabase } from "../src/db.mjs";
+import { openDatabase, insertEvent as insertEventRow } from "../src/db.mjs";
 import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
 import { runAllRollups, rollupBehavior, rollupSessions } from "../src/aggregate.mjs";
-import { buildJsonReport, buildFullReport, buildSessionEventMap } from "../src/report.mjs";
+import { buildJsonReport, buildFullReport, buildSessionEventMap, writeReports } from "../src/report.mjs";
 import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
 import { enrichWithLlm } from "../src/llm.mjs";
 import { expandHome, loadConfig } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
 import { runCli } from "../src/cli.mjs";
+import { startWatch } from "../src/watch.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const windowsProject = `C:${path.sep}Development${path.sep}AGORA`;
 assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
@@ -69,7 +72,7 @@ const exampleConfig = JSON.parse(
   fs.readFileSync(new URL("../config.example.json", import.meta.url), "utf8")
 );
 assert.equal(exampleConfig.recommendations?.llm?.enabled, false);
-assert.equal(exampleConfig.ingest?.hookEvents, true);
+assert.equal(exampleConfig.ingest?.hookEvents, false);
 
 const home = os.homedir();
 assert.equal(expandHome("~"), home);
@@ -461,11 +464,13 @@ const cpConfig = {
 };
 ingestAll(cpDb, cpConfig);
 assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
-ingestAll(cpDb, cpConfig);
+const cpReingest = ingestAll(cpDb, cpConfig);
 assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+assert.equal(cpReingest.audit.inserted, 0);
 fs.appendFileSync(cpAuditPath, cpLine2 + "\n");
-ingestAll(cpDb, cpConfig);
+const cpAppend = ingestAll(cpDb, cpConfig);
 assert.equal(cpDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
+assert.equal(cpAppend.audit.inserted, 1);
 cpDb.close();
 
 // Secondary hook logs: session-summary, subagent-audit, tool-failures
@@ -583,6 +588,26 @@ assert.equal(
   hookDb.prepare("SELECT model FROM events WHERE conversation_id = ?").get("conv-hook-1").model,
   "collector-model"
 );
+
+// Hook events: event/session_id/timestamp aliases, string tokens, status
+const hookAliasLine = JSON.stringify({
+  timestamp: "2026-06-20T14:00:00.000Z",
+  event: "sessionEnd",
+  session_id: "conv-hook-alias",
+  input_tokens: "42",
+  output_tokens: "7",
+  status: "completed",
+  workspace_roots: "not-an-array",
+});
+fs.appendFileSync(path.join(hookEventsDir, "hook-events.jsonl"), hookAliasLine + "\n");
+const hookAliasSummary = ingestAll(hookDb, hookConfig);
+assert.equal(hookAliasSummary.hookEvents.inserted, 1);
+const hookAliasRow = hookDb
+  .prepare("SELECT event_type, conversation_id, input_tokens, status FROM events WHERE conversation_id = ?")
+  .get("conv-hook-alias");
+assert.equal(hookAliasRow.event_type, "sessionEnd");
+assert.equal(hookAliasRow.input_tokens, 42);
+assert.equal(hookAliasRow.status, "completed");
 
 const hookDisabledDbPath = path.join(tmp, "hook-disabled.db");
 const hookDisabledDb = openDatabase(hookDisabledDbPath);
@@ -856,6 +881,136 @@ ingestAll(rotateDb, rotateConfig);
 assert.equal(rotateDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
 assert.equal(rotateDb.prepare("SELECT conversation_id FROM events").get().conversation_id, "conv-rotate-new");
 rotateDb.close();
+
+// insertEvent reports changes for INSERT OR IGNORE dedup
+const insertDb = openDatabase(path.join(tmp, "insert-event.db"));
+const insertEv = {
+  ts: "2026-06-20T12:00:00.000Z",
+  eventType: "stop",
+  conversationId: "conv-ins",
+  generationId: null,
+  model: "m",
+  project: null,
+  workspaceRoots: [],
+  inputTokens: 1,
+  outputTokens: 0,
+  cacheReadTokens: null,
+  cacheWriteTokens: null,
+  toolName: null,
+  command: null,
+  durationMs: null,
+  transcriptPath: null,
+  cursorVersion: null,
+  composerMode: null,
+  promptPreview: null,
+  subagentType: null,
+  status: null,
+  sourceFile: "/tmp/x.jsonl",
+  sourceLine: 1,
+  payloadJson: "{}",
+};
+assert.equal(insertEventRow(insertDb, insertEv), 1);
+assert.equal(insertEventRow(insertDb, insertEv), 0);
+insertDb.close();
+
+// Atomic latest.* report writes
+const reportDb = openDatabase(path.join(tmp, "report-write.db"));
+insertEventRow(reportDb, {
+  ...insertEv,
+  conversationId: "conv-html",
+  sourceFile: "/tmp/html.jsonl",
+  promptPreview: "hello report",
+});
+const reportsDir = path.join(tmp, "reports-out");
+const written = await writeReports(reportDb, reportsDir, {
+  recommendations: { enabled: false, llm: { enabled: false } },
+});
+assert.ok(fs.existsSync(written.latestHtml));
+assert.ok(fs.existsSync(written.latestJson));
+const html = fs.readFileSync(written.latestHtml, "utf8");
+assert.ok(html.includes("<!DOCTYPE html>"));
+assert.equal(fs.readdirSync(reportsDir).filter((f) => f.endsWith(".tmp")).length, 0);
+reportDb.close();
+
+// Collector subprocess: event alias + OBSERVATORY_DATA_DIR
+const collectorDataDir = path.join(tmp, "collector-data");
+const collectorScript = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "collector",
+  "observatory-collector.js"
+);
+const collectorPayload = JSON.stringify({
+  event: "stop",
+  session_id: "conv-collector",
+  timestamp: "2026-06-20T15:00:00.000Z",
+  model: "collector-sub",
+  input_tokens: 11,
+  workspace_roots: ["/c:/Development/Collector"],
+});
+const collectorRun = spawnSync(process.execPath, [collectorScript], {
+  input: collectorPayload,
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorRun.status, 0);
+assert.match(collectorRun.stdout, /\{\}/);
+const collectorLog = path.join(collectorDataDir, "events", "hook-events.jsonl");
+assert.ok(fs.existsSync(collectorLog));
+const collectorEntry = JSON.parse(fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop());
+assert.equal(collectorEntry.hook_event_name, "stop");
+assert.equal(collectorEntry.conversation_id, "conv-collector");
+
+// Reject non-object / missing event name
+const collectorReject = spawnSync(process.execPath, [collectorScript], {
+  input: "null",
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorReject.status, 0);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 1);
+
+// Watch smoke: refresh once, stop cleanly, no overlapping onRefresh
+const watchDb = openDatabase(path.join(tmp, "watch.db"));
+const watchHooks = path.join(tmp, "watch-hooks");
+fs.mkdirSync(watchHooks, { recursive: true });
+let active = 0;
+let maxActive = 0;
+let refreshes = 0;
+const stopWatch = startWatch(
+  {
+    hooksLogsDir: watchHooks,
+    projectsDir: path.join(tmp, "watch-projects"),
+    dataDir: path.join(tmp, "watch-data"),
+    reportsDir: path.join(tmp, "watch-reports"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+    recommendations: { enabled: false, llm: { enabled: false } },
+  },
+  watchDb,
+  {
+    intervalMs: 60_000,
+    onRefresh: async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      refreshes++;
+      await new Promise((r) => setTimeout(r, 30));
+      active--;
+    },
+  }
+);
+await new Promise((r) => setTimeout(r, 150));
+stopWatch();
+assert.ok(refreshes >= 1);
+assert.equal(maxActive, 1);
+watchDb.close();
 
 // CLI smoke tests
 const helpLines = [];

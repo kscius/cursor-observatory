@@ -153,6 +153,9 @@ export function deletePromptsForConversation(db, conversationId, source = "trans
 export function openDatabase(dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
+  // WAL + busy_timeout help when watch and a one-shot CLI share the same DB.
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
   return db;
 }
@@ -176,39 +179,42 @@ export function setCheckpoint(db, sourcePath, lastLine, lastSize) {
 }
 
 export function insertEvent(db, ev) {
-  db.prepare(
-    `INSERT OR IGNORE INTO events (
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO events (
       ts, event_type, conversation_id, generation_id, model, project,
       workspace_roots, input_tokens, output_tokens, cache_read_tokens,
       cache_write_tokens, tool_name, command, duration_ms, transcript_path,
       cursor_version, composer_mode, prompt_preview, subagent_type, status,
       source_file, source_line, payload_json
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(
-    ev.ts,
-    ev.eventType,
-    ev.conversationId,
-    ev.generationId,
-    ev.model,
-    ev.project,
-    JSON.stringify(ev.workspaceRoots || []),
-    ev.inputTokens,
-    ev.outputTokens,
-    ev.cacheReadTokens,
-    ev.cacheWriteTokens,
-    ev.toolName,
-    ev.command,
-    ev.durationMs,
-    ev.transcriptPath,
-    ev.cursorVersion,
-    ev.composerMode,
-    ev.promptPreview || null,
-    ev.subagentType,
-    ev.status,
-    ev.sourceFile,
-    ev.sourceLine,
-    ev.payloadJson
-  );
+    )
+    .run(
+      ev.ts,
+      ev.eventType,
+      ev.conversationId,
+      ev.generationId,
+      ev.model,
+      ev.project,
+      JSON.stringify(ev.workspaceRoots || []),
+      ev.inputTokens,
+      ev.outputTokens,
+      ev.cacheReadTokens,
+      ev.cacheWriteTokens,
+      ev.toolName,
+      ev.command,
+      ev.durationMs,
+      ev.transcriptPath,
+      ev.cursorVersion,
+      ev.composerMode,
+      ev.promptPreview || null,
+      ev.subagentType,
+      ev.status,
+      ev.sourceFile,
+      ev.sourceLine,
+      ev.payloadJson
+    );
+  return result.changes ?? 0;
 }
 
 export function upsertTranscript(db, row) {

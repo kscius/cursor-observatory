@@ -16,6 +16,7 @@ import {
   projectFromTranscriptPath,
   stripBom,
   unwrapAuditEntry,
+  num,
 } from "./parse.mjs";
 
 function* readLinesFrom(filePath, startLine = 0) {
@@ -53,11 +54,9 @@ function ingestJsonlFile(db, filePath, mapFn) {
       }
       if (Array.isArray(mapped)) {
         for (const item of mapped) {
-          insertEvent(db, item);
-          inserted++;
+          if (insertEvent(db, item) > 0) inserted++;
         }
-      } else {
-        insertEvent(db, mapped);
+      } else if (insertEvent(db, mapped) > 0) {
         inserted++;
       }
     } catch {
@@ -281,35 +280,36 @@ export function ingestTranscripts(db, projectsDir) {
 export function ingestHookEvents(db, dataDir) {
   const f = path.join(dataDir, "events", "hook-events.jsonl");
   return ingestJsonlFile(db, f, (outer, sourceFile, sourceLine) => {
+    const roots = Array.isArray(outer.workspace_roots) ? outer.workspace_roots : [];
+    const prompt = outer.prompt || outer.user_message || null;
     const ev = {
-      ts: outer.ts || null,
-      eventType: outer.hook_event_name || "unknown",
-      conversationId: outer.conversation_id || null,
+      ts: outer.ts || outer.timestamp || null,
+      eventType: outer.hook_event_name || outer.event || "unknown",
+      conversationId: outer.conversation_id || outer.session_id || null,
       generationId: outer.generation_id || null,
       model: outer.model || null,
-      workspaceRoots: outer.workspace_roots || [],
-      inputTokens: outer.input_tokens ?? null,
-      outputTokens: outer.output_tokens ?? null,
-      cacheReadTokens: outer.cache_read_tokens ?? null,
-      cacheWriteTokens: outer.cache_write_tokens ?? null,
+      workspaceRoots: roots,
+      inputTokens: num(outer.input_tokens),
+      outputTokens: num(outer.output_tokens),
+      cacheReadTokens: num(outer.cache_read_tokens),
+      cacheWriteTokens: num(outer.cache_write_tokens),
       toolName: outer.tool_name || null,
       command: outer.command || null,
-      durationMs: outer.duration_ms ?? null,
+      durationMs: num(outer.duration_ms),
       transcriptPath: outer.transcript_path || null,
       cursorVersion: outer.cursor_version || null,
       composerMode: outer.composer_mode || null,
-      prompt: outer.prompt || null,
-      project: primaryWorkspace(outer.workspace_roots) ||
-        projectFromTranscriptPath(outer.transcript_path),
+      prompt,
+      project: primaryWorkspace(roots) || projectFromTranscriptPath(outer.transcript_path),
     };
     return {
       ...ev,
       promptPreview: ev.prompt ? String(ev.prompt).slice(0, 300) : null,
-      subagentType: null,
-      status: null,
+      subagentType: outer.subagent_type || null,
+      status: outer.status || outer.final_status || null,
       sourceFile,
       sourceLine,
-      payloadJson: JSON.stringify(outer).slice(0, 4000),
+      payloadJson: JSON.stringify(outer).slice(0, 8000),
     };
   });
 }

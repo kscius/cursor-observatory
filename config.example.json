@@ -10,7 +10,7 @@
     "subagentAudit": true,
     "toolFailures": true,
     "transcripts": true,
-    "hookEvents": true,
+    "hookEvents": false,
     "includeRotatedLogs": true
   },
   "retention": {

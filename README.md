@@ -34,8 +34,8 @@ npm run dashboard
 This will:
 
 1. Ingest hook logs + agent transcripts from `~/.cursor`
-2. Aggregate into SQLite at `~/.cursor/observatory/observatory.db`
-3. Generate `~/.cursor/observatory/reports/latest.html` and open it
+2. Apply retention (if configured), then aggregate into SQLite at `~/.cursor/observatory/observatory.db`
+3. Generate `~/.cursor/observatory/reports/latest.html` (and `latest.json`) and open the HTML report
 
 ## CLI
 
@@ -44,13 +44,15 @@ node bin/cursor-observatory.mjs ingest          # incremental ingest + rollup
 node bin/cursor-observatory.mjs ingest --full   # clear checkpoints & rescan JSONL from line 0 (existing rows deduped)
 node bin/cursor-observatory.mjs ingest --no-rollup  # ingest only (faster)
 node bin/cursor-observatory.mjs rollup          # recompute aggregates only
-node bin/cursor-observatory.mjs report          # regenerate reports
+node bin/cursor-observatory.mjs report          # rollup + regenerate reports
+node bin/cursor-observatory.mjs report --json   # also print report paths as JSON
 node bin/cursor-observatory.mjs report --with-llm # report + OpenAI coaching (needs API key)
-node bin/cursor-observatory.mjs dashboard       # ingest + report + open browser
+node bin/cursor-observatory.mjs dashboard       # ingest → retention → rollup → report → open browser
+node bin/cursor-observatory.mjs dashboard --full     # full rescan + refresh
 node bin/cursor-observatory.mjs dashboard --no-open  # headless / CI (skip browser)
 node bin/cursor-observatory.mjs dashboard --with-llm
-node bin/cursor-observatory.mjs watch           # auto-refresh on file changes
-node bin/cursor-observatory.mjs watch --interval 60
+node bin/cursor-observatory.mjs watch           # auto-refresh on file changes (30s interval, 2s debounce)
+node bin/cursor-observatory.mjs watch --interval 60  # interval in seconds
 node bin/cursor-observatory.mjs prune           # apply retention (if configured)
 node bin/cursor-observatory.mjs status          # DB summary
 npm test
@@ -62,30 +64,32 @@ npm test
 
 **Refresh reports** — run `npm run dashboard` when you want an updated view.
 
-**Near real-time** — run `npm run watch` in a terminal; it re-ingests when hook logs or transcripts change (plus periodic refresh every 30s by default).
+**Near real-time** — run `npm run watch` in a terminal; it re-ingests when hook logs or transcripts change (plus periodic refresh every 30s by default). Overlapping refreshes are serialized so the DB is not updated concurrently.
 
 **Scheduled (Windows)** — optional Task Scheduler entry:
 
 ```powershell
-schtasks /Create /TN "Cursor Observatory Ingest" /TR "cmd /c cd /d C:\Development\cursor-observatory && npm run ingest" /SC HOURLY /F
+schtasks /Create /TN "Cursor Observatory Dashboard" /TR "cmd /c cd /d <repo-path> && node bin/cursor-observatory.mjs dashboard --no-open" /SC HOURLY /F
 ```
 
-**Scheduled (Linux/macOS)** — optional cron entry (hourly ingest):
+**Scheduled (Linux/macOS)** — optional cron entry (hourly DB + report refresh):
 
 ```bash
 # crontab -e
-0 * * * * cd /path/to/cursor-observatory && npm run ingest
+0 * * * * cd /path/to/cursor-observatory && node bin/cursor-observatory.mjs dashboard --no-open
 ```
 
-After `prune` removes old raw events, session aggregates are recomputed automatically when any rows were deleted. Use `rollup` or `dashboard` if you pruned outside the CLI.
+Use `npm run ingest` alone only if you want the DB updated without regenerating `latest.html`. After `prune` removes old raw events, session aggregates are recomputed automatically when any rows were deleted. Use `rollup` or `dashboard` if you pruned outside the CLI.
 
 ## Data sources
 
 | Source | Path |
 |--------|------|
 | Hook audit (tokens, tools, sessions) | `~/.cursor/hooks/logs/agent-audit.jsonl` |
+| Rotated audit (when `includeRotatedLogs`) | `~/.cursor/hooks/logs/agent-audit.jsonl.old` |
 | Session end | `~/.cursor/hooks/logs/session-summary.jsonl` |
 | Subagents | `~/.cursor/hooks/logs/subagent-audit.jsonl` |
+| Tool failures | `~/.cursor/hooks/logs/tool-failures.jsonl` |
 | Agent transcripts | `~/.cursor/projects/*/agent-transcripts/**/*.jsonl` |
 | Optional collector | `~/.cursor/observatory/events/hook-events.jsonl` |
 
@@ -96,10 +100,25 @@ Copy `collector/observatory-collector.js` and register in `~/.cursor/hooks.json`
 - `beforeSubmitPrompt`
 - `sessionStart` / `sessionEnd`
 - `stop`
+- optionally `preToolUse` / `postToolUse` / `afterShellExecution` (for `tool_count` without audit logs)
 
-Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl`.
+Example `hooks.json` entry (adjust the script path):
 
-Enable with `"hookEvents": true` in `~/.cursor/observatory/config.json`. If you use the collector, set `"auditLogs": false` (or `"hookEvents": false`) so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`.
+```json
+{
+  "version": 1,
+  "hooks": {
+    "stop": [{ "command": "node ~/.cursor/hooks/observatory-collector.js" }],
+    "beforeSubmitPrompt": [{ "command": "node ~/.cursor/hooks/observatory-collector.js" }],
+    "sessionStart": [{ "command": "node ~/.cursor/hooks/observatory-collector.js" }],
+    "sessionEnd": [{ "command": "node ~/.cursor/hooks/observatory-collector.js" }]
+  }
+}
+```
+
+Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl` (or `$OBSERVATORY_DATA_DIR/events` / `dataDir` from config).
+
+Enable with `"hookEvents": true` in `~/.cursor/observatory/config.json` (default in `config.example.json` is `false` so audit-only setups do not double-count). If you use the collector, set `"auditLogs": false` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`.
 
 ## Configuration
 
