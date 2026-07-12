@@ -64,7 +64,7 @@ npm test
 
 **Refresh reports** — run `npm run dashboard` when you want an updated view.
 
-**Near real-time** — run `npm run watch` in a terminal; it re-ingests when hook logs or transcripts change (plus periodic refresh every 30s by default). Overlapping refreshes are serialized so the DB is not updated concurrently.
+**Near real-time** — run `npm run watch` in a terminal; it re-ingests when hook logs, transcripts, or collector event files change (plus periodic refresh every 30s by default). Each refresh runs ingest → retention → rollup → report. Overlapping refreshes are serialized so the DB is not updated concurrently.
 
 **Scheduled (Windows)** — optional Task Scheduler entry:
 
@@ -118,7 +118,7 @@ Example `hooks.json` entry (adjust the script path):
 
 Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl` (or `$OBSERVATORY_DATA_DIR/events` / `dataDir` from config).
 
-Enable with `"hookEvents": true` in `~/.cursor/observatory/config.json` (default in `config.example.json` is `false` so audit-only setups do not double-count). If you use the collector, set `"auditLogs": false` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`.
+Enable with `"hookEvents": true` in `~/.cursor/observatory/config.json` (omitting the key keeps it off; `config.example.json` also sets `false` so audit-only setups do not double-count). If you use the collector, set `"auditLogs": false` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`. Note: the hook collector itself only reads `~/.cursor/observatory/config.json` (or `OBSERVATORY_DATA_DIR`), not a repo-local `config.json`.
 
 ## Configuration
 

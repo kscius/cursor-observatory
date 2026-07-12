@@ -24,8 +24,8 @@ Commands:
   ingest     Read ~/.cursor hooks logs + transcripts into SQLite
   rollup     Recompute sessions, time buckets, and behavior only
   report     Generate HTML + JSON reports
-  dashboard  ingest + rollup + report (full refresh)
-  watch      Auto-refresh on file changes (hooks + transcripts)
+  dashboard  ingest + retention + rollup + report (full refresh)
+  watch      Auto-refresh on file changes (hooks + transcripts + collector events)
   prune      Apply retention policy from config (if enabled)
   status     Show database summary
 `);
@@ -148,7 +148,7 @@ export async function runCli(argv) {
       db.exec(`DELETE FROM ingest_checkpoints`);
       console.log("Full ingest: checkpoints cleared");
     }
-    console.log("Dashboard: ingest → rollup → report");
+    console.log("Dashboard: ingest → retention → rollup → report");
     const summary = ingestAll(db, config);
     console.log("Ingest:", JSON.stringify(summary, null, 2));
     applyRetention(db, config);

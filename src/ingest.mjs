@@ -21,10 +21,21 @@ import {
 
 function* readLinesFrom(filePath, startLine = 0) {
   const content = fs.readFileSync(filePath, "utf8");
+  const endsWithNewline = content.endsWith("\n");
   const lines = content.split(/\r?\n/);
+  let lastNonEmptyIndex = -1;
+  for (let i = startLine; i < lines.length; i++) {
+    if (stripBom(lines[i]).trim()) lastNonEmptyIndex = i;
+  }
   for (let i = startLine; i < lines.length; i++) {
     const line = stripBom(lines[i]);
-    if (line.trim()) yield { line, lineNo: i + 1 };
+    if (!line.trim()) continue;
+    yield {
+      line,
+      lineNo: i + 1,
+      // Incomplete trailing write (collector mid-append) — do not checkpoint past it.
+      isTrailingPartialLine: !endsWithNewline && i === lastNonEmptyIndex,
+    };
   }
 }
 
@@ -43,16 +54,15 @@ function ingestJsonlFile(db, filePath, mapFn) {
   let skipped = 0;
   let maxLine = startLine;
 
-  for (const { line, lineNo } of readLinesFrom(filePath, startLine)) {
-    maxLine = lineNo;
+  for (const { line, lineNo, isTrailingPartialLine } of readLinesFrom(filePath, startLine)) {
+    let parsed = false;
     try {
       const outer = JSON.parse(line);
+      parsed = true;
       const mapped = mapFn(outer, filePath, lineNo);
       if (!mapped) {
         skipped++;
-        continue;
-      }
-      if (Array.isArray(mapped)) {
+      } else if (Array.isArray(mapped)) {
         for (const item of mapped) {
           if (insertEvent(db, item) > 0) inserted++;
         }
@@ -61,6 +71,10 @@ function ingestJsonlFile(db, filePath, mapFn) {
       }
     } catch {
       skipped++;
+    }
+    // Advance past corrupt middle lines; hold checkpoint on a trailing partial line.
+    if (parsed || !isTrailingPartialLine) {
+      maxLine = lineNo;
     }
   }
 

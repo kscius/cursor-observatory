@@ -33,8 +33,8 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh } = {}) {
         pending = false;
         try {
           ingestAll(db, config);
-          runAllRollups(db);
           applyRetention(db, config);
+          runAllRollups(db);
           const withLlm = config.recommendations?.llm?.enabled;
           const paths = await writeReports(db, config.reportsDir, config, { withLlm });
           await onRefresh?.(paths);

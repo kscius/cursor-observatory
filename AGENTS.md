@@ -33,9 +33,10 @@ Non-obvious caveats:
 - Output is written outside the repo, under `~/.cursor/observatory/`
   (DB at `observatory.db` in WAL mode, reports under `reports/latest.html` via
   atomic replace).
-- **Collector ingest is opt-in.** `config.example.json` sets `ingest.hookEvents` to
-  `false` so default audit-log ingest does not double-count. Enable only when using
-  `collector/observatory-collector.js`.
+- **Collector ingest is opt-in.** `loadConfig()` enables `ingest.hookEvents` only
+  when set to `true` (omitted/`false` stays off). `config.example.json` also sets
+  it to `false` so default audit-log ingest does not double-count. Enable only when
+  using `collector/observatory-collector.js`.
 - LLM coaching is **opt-in** (`recommendations.llm.enabled` is `false` in
   `config.example.json`). Enable via `--with-llm` or config; without
   `OPENAI_API_KEY` it silently no-ops. No key is required for normal operation.

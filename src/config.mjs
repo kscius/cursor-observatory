@@ -67,7 +67,8 @@ export function loadConfig() {
       subagentAudit: raw.ingest?.subagentAudit !== false,
       toolFailures: raw.ingest?.toolFailures !== false,
       transcripts: raw.ingest?.transcripts !== false,
-      hookEvents: raw.ingest?.hookEvents !== false,
+      // Opt-in: omit or false keeps collector ingest off (matches config.example.json).
+      hookEvents: raw.ingest?.hookEvents === true,
       includeRotatedLogs: raw.ingest?.includeRotatedLogs !== false,
     },
     retention: {

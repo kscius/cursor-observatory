@@ -967,6 +967,13 @@ window.__REPORT__ = ${jsonEmbed};
   sections.forEach(s => obs.observe(s));
 
   function fmtN(n) { return n == null ? '—' : Number(n).toLocaleString('en-US'); }
+  function escHtml(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
 
   function fmtTime(ts) {
     if (!ts) return '—';
@@ -1001,10 +1008,10 @@ window.__REPORT__ = ${jsonEmbed};
     el.innerHTML = events.map(ev => {
       const slug = (ev.type || 'event').replace(/[^a-zA-Z0-9]/g, '');
       return '<div class="timeline-item">' +
-        '<span class="timeline-time" title="' + (ev.ts || '') + '">' + fmtTime(ev.ts) + '</span>' +
-        '<span class="timeline-type type-' + slug + '">' + (ev.type || 'event') + '</span>' +
-        '<span class="timeline-detail">' + eventDetail(ev).replace(/</g, '&lt;') + '</span>' +
-        '<span class="timeline-meta">' + eventMeta(ev) + '</span>' +
+        '<span class="timeline-time" title="' + escHtml(ev.ts || '') + '">' + escHtml(fmtTime(ev.ts)) + '</span>' +
+        '<span class="timeline-type type-' + slug + '">' + escHtml(ev.type || 'event') + '</span>' +
+        '<span class="timeline-detail">' + escHtml(eventDetail(ev)) + '</span>' +
+        '<span class="timeline-meta">' + escHtml(eventMeta(ev)) + '</span>' +
       '</div>';
     }).join('');
   }
@@ -1107,15 +1114,15 @@ window.__REPORT__ = ${jsonEmbed};
     const copyT = document.getElementById('copyTranscriptBtn');
     panel.classList.add('open');
     grid.innerHTML = [
-      ['Chat ID', '<code>' + (s.conversation_id || '—') + '</code>'],
-      ['Project', s.project || '—'],
-      ['Date', (s.started_at || '').slice(0, 10)],
-      ['Model', s.model_primary || '—'],
+      ['Chat ID', '<code>' + escHtml(s.conversation_id || '—') + '</code>'],
+      ['Project', escHtml(s.project || '—')],
+      ['Date', escHtml((s.started_at || '').slice(0, 10))],
+      ['Model', escHtml(s.model_primary || '—')],
       ['Input', fmtN(s.total_input_tokens)],
       ['Output', fmtN(s.total_output_tokens)],
       ['Prompts', fmtN(s.prompt_count)],
       ['Score', s.fluency_score != null ? Math.round(s.fluency_score) : '—'],
-      ['Archetype', s.archetype || '—'],
+      ['Archetype', escHtml(s.archetype || '—')],
     ].map(([l,v]) => '<div class="detail-item"><label>' + l + '</label><span>' + v + '</span></div>').join('');
     prev.textContent = s.first_prompt_preview ? s.first_prompt_preview.replace(/<[^>]+>/g, ' ').trim().slice(0, 500) : 'No prompt preview';
     renderTimeline(s.conversation_id);
