@@ -23,7 +23,7 @@ import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase, insertEvent as insertEventRow } from "../src/db.mjs";
 import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
 import { runAllRollups, rollupBehavior, rollupSessions } from "../src/aggregate.mjs";
-import { buildJsonReport, buildFullReport, buildSessionEventMap, writeReports } from "../src/report.mjs";
+import { buildJsonReport, buildFullReport, buildSessionEventMap, writeReports, buildHtmlReport } from "../src/report.mjs";
 import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
 import { enrichWithLlm } from "../src/llm.mjs";
 import { expandHome, loadConfig } from "../src/config.mjs";
@@ -64,6 +64,20 @@ const badRawAudit = JSON.stringify({
 const badEv = unwrapAuditEntry(JSON.parse(badRawAudit));
 assert.equal(badEv.eventType, "unknown");
 
+const innerEventAudit = {
+  timestamp: "2026-06-18T00:34:02.971Z",
+  event: "unknown",
+  data: {
+    raw: JSON.stringify({
+      event: "stop",
+      conversation_id: "conv-inner-event",
+      input_tokens: 5,
+      output_tokens: 1,
+    }),
+  },
+};
+assert.equal(unwrapAuditEntry(innerEventAudit).eventType, "stop");
+
 const emptyBehavior = scoreBehaviorFromPrompts([]);
 assert.equal(emptyBehavior.archetype, "Sprinter");
 assert.equal(emptyBehavior.fluencyScore, 50);
@@ -73,6 +87,23 @@ const exampleConfig = JSON.parse(
 );
 assert.equal(exampleConfig.recommendations?.llm?.enabled, false);
 assert.equal(exampleConfig.ingest?.hookEvents, false);
+
+// loadConfig: omitted hookEvents stays opt-in (false)
+{
+  const userConfigPath = path.join(os.homedir(), ".cursor", "observatory", "config.json");
+  const repoConfigPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "config.json");
+  if (!fs.existsSync(userConfigPath)) {
+    const hadRepoConfig = fs.existsSync(repoConfigPath);
+    const savedRepoConfig = hadRepoConfig ? fs.readFileSync(repoConfigPath, "utf8") : null;
+    try {
+      fs.writeFileSync(repoConfigPath, JSON.stringify({ retention: { keepRawEventsDays: 0 } }));
+      assert.equal(loadConfig().ingest.hookEvents, false);
+    } finally {
+      if (hadRepoConfig) fs.writeFileSync(repoConfigPath, savedRepoConfig);
+      else if (fs.existsSync(repoConfigPath)) fs.unlinkSync(repoConfigPath);
+    }
+  }
+}
 
 const home = os.homedir();
 assert.equal(expandHome("~"), home);
@@ -298,6 +329,23 @@ assert.equal(
   retentionDb.prepare("SELECT COUNT(*) AS n FROM events").get().n,
   1
 );
+
+// Same cutoff-day ISO timestamps must prune (ISO vs SQLite datetime string trap)
+const retentionEdgeDb = openDatabase(path.join(tmp, "retention-edge.db"));
+const edgeDays = 30;
+const edgeCutoff = new Date(Date.now() - edgeDays * 24 * 60 * 60 * 1000);
+const sameCutoffDayOldIso = new Date(
+  Date.UTC(edgeCutoff.getUTCFullYear(), edgeCutoff.getUTCMonth(), edgeCutoff.getUTCDate())
+).toISOString();
+retentionEdgeDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+     VALUES (?, 'stop', ?, ?, ?)`
+  )
+  .run(sameCutoffDayOldIso, "same-day-old", "same-day-old.jsonl", 1);
+const edgePruned = applyRetention(retentionEdgeDb, { retention: { keepRawEventsDays: edgeDays } });
+assert.equal(edgePruned.prunedEvents, 1);
+retentionEdgeDb.close();
 
 // Retention: prune old prompts alongside events
 const promptRetentionDb = openDatabase(path.join(tmp, "retention-prompts.db"));
@@ -1011,6 +1059,105 @@ stopWatch();
 assert.ok(refreshes >= 1);
 assert.equal(maxActive, 1);
 watchDb.close();
+
+// Trailing incomplete JSONL line must not advance checkpoint until completed
+const partialHooksDir = path.join(tmp, "hooks-partial", "logs");
+fs.mkdirSync(partialHooksDir, { recursive: true });
+const partialAuditPath = path.join(partialHooksDir, "agent-audit.jsonl");
+const partialLine1 = JSON.stringify({
+  timestamp: "2026-06-21T12:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-partial-1",
+      hook_event_name: "stop",
+      model: "model-a",
+    }),
+  },
+});
+const partialLine2 = JSON.stringify({
+  timestamp: "2026-06-21T12:01:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-partial-2",
+      hook_event_name: "stop",
+      model: "model-b",
+    }),
+  },
+});
+fs.writeFileSync(partialAuditPath, partialLine1 + "\n" + partialLine2.slice(0, -1));
+const partialDb = openDatabase(path.join(tmp, "partial-checkpoint.db"));
+const partialFirst = ingestAuditLogs(partialDb, partialHooksDir, false);
+assert.equal(partialFirst.inserted, 1);
+assert.equal(partialFirst.skipped, 1);
+assert.equal(
+  partialDb.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(partialAuditPath)
+    .last_line,
+  1
+);
+fs.writeFileSync(partialAuditPath, partialLine1 + "\n" + partialLine2 + "\n");
+const partialSecond = ingestAuditLogs(partialDb, partialHooksDir, false);
+assert.equal(partialSecond.inserted, 1);
+assert.equal(
+  partialDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-partial-2").n,
+  1
+);
+partialDb.close();
+
+// Corrupt middle JSONL line should still advance checkpoint
+const corruptHooksDir = path.join(tmp, "hooks-corrupt", "logs");
+fs.mkdirSync(corruptHooksDir, { recursive: true });
+const corruptAuditPath = path.join(corruptHooksDir, "agent-audit.jsonl");
+fs.writeFileSync(corruptAuditPath, partialLine1 + "\n{not-json}\n" + partialLine2 + "\n");
+const corruptDb = openDatabase(path.join(tmp, "corrupt-checkpoint.db"));
+const corruptFirst = ingestAuditLogs(corruptDb, corruptHooksDir, false);
+assert.equal(corruptFirst.inserted, 2);
+assert.equal(corruptFirst.skipped, 1);
+assert.equal(
+  corruptDb.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(corruptAuditPath)
+    .last_line,
+  3
+);
+const corruptSecond = ingestAuditLogs(corruptDb, corruptHooksDir, false);
+assert.equal(corruptSecond.inserted, 0);
+assert.equal(corruptSecond.skipped, 0);
+corruptDb.close();
+
+// Client-side report helpers escape session detail / timeline values
+{
+  const html = buildHtmlReport({
+    generatedAt: "2026-07-12T00:00:00.000Z",
+    totals: {},
+    today: {},
+    behavior: null,
+    daily: [],
+    hourlyToday: [],
+    topProjects: [],
+    topModels: [],
+    topTools: [],
+    toolFailures: [],
+    toolUsage: [],
+    recentSessions: [
+      {
+        conversation_id: '<img src=x onerror=alert(1)>',
+        project: '<script>alert(1)</script>',
+        started_at: "2026-07-12T00:00:00.000Z",
+        model_primary: 'composer"><b>x',
+        total_input_tokens: 1,
+        total_output_tokens: 1,
+        prompt_count: 1,
+        fluency_score: 50,
+        archetype: "Sprinter",
+        first_prompt_preview: null,
+        transcript_path: null,
+      },
+    ],
+    sessionEvents: {},
+    recommendations: { enabled: false },
+  });
+  assert.ok(html.includes("function escHtml"));
+  assert.ok(html.includes("escHtml(s.project"));
+  assert.ok(html.includes("escHtml(ev.type"));
+}
 
 // CLI smoke tests
 const helpLines = [];

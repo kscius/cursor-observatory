@@ -54,6 +54,7 @@ export function unwrapAuditEntry(outer) {
 
   const eventType =
     inner.hook_event_name ||
+    inner.event ||
     outer.event ||
     outer.hook_event_name ||
     "unknown";
