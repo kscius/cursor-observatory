@@ -1133,6 +1133,8 @@ corruptDb.close();
     hourlyToday: [],
     topProjects: [],
     topModels: [],
+    topTools: [],
+    toolFailures: [],
     toolUsage: [],
     recentSessions: [
       {
