@@ -118,13 +118,13 @@ Example `hooks.json` entry (adjust the script path):
 
 Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl` (or `$OBSERVATORY_DATA_DIR/events` / `dataDir` from config).
 
-Enable with `"hookEvents": true` in `~/.cursor/observatory/config.json` (omitting the key keeps it off; `config.example.json` also sets `false` so audit-only setups do not double-count). If you use the collector, set `"auditLogs": false` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`. Note: the hook collector itself only reads `~/.cursor/observatory/config.json` (or `OBSERVATORY_DATA_DIR`), not a repo-local `config.json`.
+Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/observatory/config.json` (omitting the key keeps it off; `config.example.json` also sets `false` so audit-only setups do not double-count). If you use the collector, set `"ingest": { "auditLogs": false }` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`. Note: the hook collector itself only reads `~/.cursor/observatory/config.json` (or `OBSERVATORY_DATA_DIR`), not a repo-local `config.json`.
 
 ## Configuration
 
 Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
 
-Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config.
+Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config. Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `watch` picks up LLM coaching only from config (`recommendations.llm.enabled`), not via `--with-llm`.
 
 ## Recommendations (Guide cards)
 
