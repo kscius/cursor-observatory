@@ -1,4 +1,4 @@
-import { queryAll, queryScalar } from "./db.mjs";
+import { queryAll, queryScalar, withTransaction } from "./db.mjs";
 import { scoreBehaviorFromPrompts } from "./behavior.mjs";
 
 export function rollupSessions(db) {
@@ -173,7 +173,7 @@ export function rollupBehavior(db) {
   db.exec(`DELETE FROM behavior_snapshots WHERE period = 'daily'`);
 
   const prompts = queryAll(db, `SELECT preview FROM prompts ORDER BY id`);
-  const sessions = queryAll(db, `SELECT COUNT(*) AS c FROM sessions`)[0]?.c || 0;
+  const sessions = queryScalar(db, `SELECT COUNT(*) AS c FROM sessions`)?.c || 0;
   const toolCount = aggregateToolCount(db);
   const overall = scoreBehaviorFromPrompts(
     prompts.map((p) => p.preview),
@@ -220,12 +220,25 @@ export function rollupBehavior(db) {
       day
     );
     const dayTools = aggregateToolCount(db, day);
-    const b = scoreBehaviorFromPrompts(dayPrompts.map((p) => p.preview), { toolCount: dayTools });
+    const daySessions =
+      queryScalar(
+        db,
+        `SELECT COUNT(DISTINCT conversation_id) AS c
+         FROM events
+         WHERE event_type = 'stop'
+           AND conversation_id IS NOT NULL
+           AND substr(COALESCE(ts, ''), 1, 10) = ?`,
+        day
+      )?.c || 0;
+    const b = scoreBehaviorFromPrompts(dayPrompts.map((p) => p.preview), {
+      toolCount: dayTools,
+      sessionCount: daySessions,
+    });
     db.prepare(
       `INSERT INTO behavior_snapshots (
         period, period_key, fluency_score, archetype, briefing, verification,
         context_setting, iteration, toolcraft, real_prompt_count, session_count, computed_at
-      ) VALUES ('daily', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+      ) VALUES ('daily', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(period, period_key) DO UPDATE SET
         fluency_score = excluded.fluency_score,
         archetype = excluded.archetype,
@@ -235,6 +248,7 @@ export function rollupBehavior(db) {
         iteration = excluded.iteration,
         toolcraft = excluded.toolcraft,
         real_prompt_count = excluded.real_prompt_count,
+        session_count = excluded.session_count,
         computed_at = excluded.computed_at`
     ).run(
       day,
@@ -245,14 +259,17 @@ export function rollupBehavior(db) {
       b.dimensions.contextSetting,
       b.dimensions.iteration,
       b.dimensions.toolcraft,
-      b.realPromptCount
+      b.realPromptCount,
+      daySessions
     );
   }
 }
 
 export function runAllRollups(db) {
-  const sessions = rollupSessions(db);
-  rollupTimeBuckets(db);
-  rollupBehavior(db);
-  return { sessions };
+  return withTransaction(db, () => {
+    const sessions = rollupSessions(db);
+    rollupTimeBuckets(db);
+    rollupBehavior(db);
+    return { sessions };
+  });
 }

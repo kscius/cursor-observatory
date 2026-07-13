@@ -20,7 +20,7 @@ import {
   detectSlashCommand,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
-import { openDatabase, insertEvent as insertEventRow } from "../src/db.mjs";
+import { openDatabase, insertEvent as insertEventRow, withTransaction } from "../src/db.mjs";
 import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
 import { runAllRollups, rollupBehavior, rollupSessions } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap, writeReports, buildHtmlReport } from "../src/report.mjs";
@@ -460,7 +460,40 @@ assert.ok(
 assert.ok(
   !transcriptDb.prepare("SELECT preview FROM prompts LIMIT 1").get().preview.includes("<user_query>")
 );
+
+// Transcript re-ingest: unchanged mtime skips re-parse
+const mtimeSecond = ingestAll(transcriptDb, transcriptConfig);
+assert.equal(mtimeSecond.transcripts.transcripts, 0);
+assert.equal(mtimeSecond.transcripts.prompts, 0);
+assert.equal(mtimeSecond.transcripts.files, 1);
+assert.equal(transcriptDb.prepare("SELECT COUNT(*) AS n FROM prompts").get().n, 1);
 transcriptDb.close();
+
+// Transcript re-ingest: mtime change replaces prompts
+const mtimeChangeDb = openDatabase(path.join(tmp, "transcript-mtime.db"));
+ingestAll(mtimeChangeDb, transcriptConfig);
+fs.writeFileSync(
+  transcriptPath,
+  JSON.stringify({
+    role: "user",
+    message: {
+      content: [{ type: "text", text: "<user_query>\nupdated prompt after mtime\n</user_query>" }],
+    },
+  }) + "\n"
+);
+const bumpedMtime = Date.now() + 60_000;
+fs.utimesSync(transcriptPath, bumpedMtime / 1000, bumpedMtime / 1000);
+const mtimeChanged = ingestAll(mtimeChangeDb, transcriptConfig);
+assert.equal(mtimeChanged.transcripts.transcripts, 1);
+assert.equal(mtimeChanged.transcripts.prompts, 1);
+assert.equal(mtimeChangeDb.prepare("SELECT COUNT(*) AS n FROM prompts").get().n, 1);
+assert.ok(
+  mtimeChangeDb
+    .prepare("SELECT preview FROM prompts LIMIT 1")
+    .get()
+    .preview.includes("updated prompt after mtime")
+);
+mtimeChangeDb.close();
 
 // Incremental ingest: checkpoint resume and dedup on re-ingest
 const cpHooksDir = path.join(tmp, "hooks-cp", "logs");
@@ -668,7 +701,7 @@ hookDisabledDb.close();
 
 // loadConfig rejects invalid JSON in repo config.json (skipped when user config exists)
 const userConfigPath = path.join(home, ".cursor", "observatory", "config.json");
-const repoConfigPath = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "config.json");
+const repoConfigPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "config.json");
 if (!fs.existsSync(userConfigPath)) {
   const hadRepoConfig = fs.existsSync(repoConfigPath);
   const savedRepoConfig = hadRepoConfig ? fs.readFileSync(repoConfigPath, "utf8") : null;
@@ -744,6 +777,36 @@ try {
   else if (fs.existsSync(bomAuditDefault)) fs.unlinkSync(bomAuditDefault);
 }
 bomDirectDb.close();
+
+// includeRotatedLogs: agent-audit.jsonl.old is ingested when enabled
+const rotHooksDir = path.join(tmp, "hooks-rotated", "logs");
+fs.mkdirSync(rotHooksDir, { recursive: true });
+const rotOldPath = path.join(rotHooksDir, "agent-audit.jsonl.old");
+const rotLine = JSON.stringify({
+  timestamp: "2026-06-21T13:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-rotated-old",
+      hook_event_name: "stop",
+      model: "rot-model",
+      input_tokens: 7,
+      output_tokens: 1,
+    }),
+  },
+});
+fs.writeFileSync(rotOldPath, rotLine + "\n");
+const rotDb = openDatabase(path.join(tmp, "rotated-audit.db"));
+const rotOff = ingestAuditLogs(rotDb, rotHooksDir, false);
+assert.equal(rotOff.files, 0);
+assert.equal(rotOff.inserted, 0);
+const rotOn = ingestAuditLogs(rotDb, rotHooksDir, true);
+assert.equal(rotOn.files, 1);
+assert.equal(rotOn.inserted, 1);
+assert.equal(
+  rotDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-rotated-old").n,
+  1
+);
+rotDb.close();
 
 // Daily chart: one conversation with two models counts as one session
 const dayDbPath = path.join(tmp, "daily-sessions.db");
@@ -872,6 +935,100 @@ assert.equal(
   0
 );
 purgeDb.close();
+
+// rollupBehavior: daily behavior_snapshots.session_count matches distinct stop sessions
+const behSessDbPath = path.join(tmp, "behavior-session-count.db");
+const behSessDb = openDatabase(behSessDbPath);
+const behDay = "2026-06-25";
+for (const [conv, line] of [
+  ["conv-beh-a", 1],
+  ["conv-beh-b", 2],
+]) {
+  behSessDb
+    .prepare(
+      `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+       VALUES (?, 'stop', ?, 'beh.jsonl', ?)`
+    )
+    .run(`${behDay}T10:00:00.000Z`, conv, line);
+}
+behSessDb
+  .prepare(
+    `INSERT INTO prompts (conversation_id, ts, preview, prompt_idx, source)
+     VALUES ('conv-beh-a', ?, 'fix the bug in auth.ts and run tests', 0, 'transcript')`
+  )
+  .run(`${behDay}T10:05:00.000Z`);
+runAllRollups(behSessDb);
+assert.equal(
+  behSessDb
+    .prepare(
+      `SELECT session_count AS n FROM behavior_snapshots WHERE period='daily' AND period_key=?`
+    )
+    .get(behDay).n,
+  2
+);
+assert.equal(
+  behSessDb
+    .prepare(
+      `SELECT session_count AS n FROM behavior_snapshots WHERE period='all-time' AND period_key='all'`
+    )
+    .get().n,
+  2
+);
+rollupBehavior(behSessDb);
+assert.equal(
+  behSessDb
+    .prepare(
+      `SELECT session_count AS n FROM behavior_snapshots WHERE period='daily' AND period_key=?`
+    )
+    .get(behDay).n,
+  2,
+  "session_count survives ON CONFLICT upsert"
+);
+behSessDb.close();
+
+// withTransaction rolls back on failure; runAllRollups is atomic across aggregate tables
+const txDb = openDatabase(path.join(tmp, "rollup-tx.db"));
+txDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line, input_tokens, output_tokens)
+     VALUES ('2026-06-26T12:00:00.000Z', 'stop', 'conv-tx', 'tx.jsonl', 1, 5, 1)`
+  )
+  .run();
+txDb
+  .prepare(
+    `INSERT INTO prompts (conversation_id, ts, preview, prompt_idx, source)
+     VALUES ('conv-tx', '2026-06-26T12:00:00.000Z', 'implement a rollback-safe rollup', 0, 'transcript')`
+  )
+  .run();
+runAllRollups(txDb);
+assert.equal(txDb.prepare("SELECT COUNT(*) AS n FROM sessions").get().n, 1);
+assert.equal(
+  txDb.prepare("SELECT COUNT(*) AS n FROM behavior_snapshots WHERE period='daily'").get().n,
+  1
+);
+assert.throws(
+  () =>
+    withTransaction(txDb, () => {
+      txDb.exec("DELETE FROM sessions");
+      throw new Error("forced transaction failure");
+    }),
+  /forced transaction failure/
+);
+assert.equal(txDb.prepare("SELECT COUNT(*) AS n FROM sessions").get().n, 1);
+txDb.exec(`
+  CREATE TRIGGER fail_daily_behavior BEFORE INSERT ON behavior_snapshots
+  WHEN NEW.period = 'daily'
+  BEGIN
+    SELECT RAISE(ABORT, 'forced rollup failure');
+  END
+`);
+assert.throws(() => runAllRollups(txDb), /forced rollup failure/);
+assert.equal(txDb.prepare("SELECT COUNT(*) AS n FROM sessions").get().n, 1);
+assert.equal(
+  txDb.prepare("SELECT COUNT(*) AS n FROM behavior_snapshots WHERE period='daily'").get().n,
+  1
+);
+txDb.close();
 
 // Log rotation: truncated audit file drops stale events and re-ingests
 const rotateDir = path.join(tmp, "rotate");

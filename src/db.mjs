@@ -134,6 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_events_conversation ON events(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_prompts_conversation ON prompts(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_prompts_ts ON prompts(ts);
 CREATE INDEX IF NOT EXISTS idx_events_conv_type ON events(conversation_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_events_type_tool ON events(event_type, tool_name);
 `;
@@ -269,4 +270,21 @@ export function queryScalar(db, sql, ...params) {
 
 export function queryAll(db, sql, ...params) {
   return db.prepare(sql).all(...params);
+}
+
+/** Run fn inside a single SQLite transaction (BEGIN/COMMIT/ROLLBACK). */
+export function withTransaction(db, fn) {
+  db.exec("BEGIN");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      /* connection may already be closed or rolled back */
+    }
+    throw err;
+  }
 }
