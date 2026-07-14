@@ -109,7 +109,7 @@ export function buildDeterministicRecommendations(report) {
       { label: "Archetype", value: b.archetype || "—", hint: "Dominant interaction style" },
       { label: "Briefing", value: `${Math.round((dims.briefing ?? b.briefing ?? 0) * 100)}%`, hint: "Clear goals + constraints" },
       { label: "Verification", value: `${Math.round((dims.verification ?? b.verification ?? 0) * 100)}%`, hint: "Ask to test/lint/build" },
-      { label: "Context", value: `${Math.round((dims.context_setting ?? b.context_setting ?? 0) * 100)}%`, hint: "Mention files/modules" },
+      { label: "Context", value: `${Math.round((dims.context_setting ?? b.context_setting ?? dims.contextSetting ?? 0) * 100)}%`, hint: "Mention files/modules" },
       { label: "Iteration", value: `${Math.round((dims.iteration ?? b.iteration ?? 0) * 100)}%`, hint: "Precise corrections" },
       { label: "Toolcraft", value: `${Math.round((dims.toolcraft ?? b.toolcraft ?? 0) * 100)}%`, hint: "Tool use vs prompts" },
     ],
