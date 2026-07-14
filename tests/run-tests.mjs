@@ -20,7 +20,7 @@ import {
   detectSlashCommand,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
-import { openDatabase, insertEvent as insertEventRow, withTransaction } from "../src/db.mjs";
+import { openDatabase, insertEvent as insertEventRow, withTransaction, queryScalar } from "../src/db.mjs";
 import { ingestAll, ingestAuditLogs } from "../src/ingest.mjs";
 import { runAllRollups, rollupBehavior, rollupSessions } from "../src/aggregate.mjs";
 import { buildJsonReport, buildFullReport, buildSessionEventMap, writeReports, buildHtmlReport } from "../src/report.mjs";
@@ -1314,6 +1314,80 @@ corruptDb.close();
   assert.ok(html.includes("function escHtml"));
   assert.ok(html.includes("escHtml(s.project"));
   assert.ok(html.includes("escHtml(ev.type"));
+}
+
+// --with-llm still builds recommendations when guide cards are disabled
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    const withFlag = await buildFullReport(
+      db,
+      { recommendations: { enabled: false, llm: { enabled: false } }, dataDir: path.join(tmp, "llm-disabled-cache") },
+      { withLlm: true }
+    );
+    assert.ok(withFlag.recommendations?.sections?.overview, "--with-llm should not early-return when recommendations.enabled=false");
+
+    const disabled = await buildFullReport(db, { recommendations: { enabled: false } });
+    assert.equal(disabled.recommendations, undefined);
+  } finally {
+    if (savedApiKey !== undefined) process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
+// Guide card Context metric reads live camelCase contextSetting
+{
+  const ctxRecs = buildDeterministicRecommendations({
+    totals: { sessions: 1, events: 1, input_tokens: 10, output_tokens: 5, cache_read_tokens: 0 },
+    topProjects: [],
+    topModels: [],
+    topTools: [],
+    toolFailures: [],
+    behavior: {
+      fluency_score: 60,
+      archetype: "Architect",
+      real_prompt_count: 1,
+      dimensions: {
+        briefing: 0.5,
+        verification: 0.5,
+        contextSetting: 0.8,
+        iteration: 0.5,
+        toolcraft: 0.5,
+      },
+    },
+  });
+  const contextMetric = ctxRecs.sections.behavior.metrics.find((m) => m.label === "Context");
+  assert.equal(contextMetric?.value, "80%");
+}
+
+// status session count matches report (distinct conversations in events, not sessions table)
+{
+  const statusDbPath = path.join(tmp, "status-sessions.db");
+  const statusDb = openDatabase(statusDbPath);
+  insertEventRow(statusDb, {
+    ...insertEv,
+    conversationId: "status-conv-1",
+    generationId: "status-gen-1",
+    sourceFile: "status-test.jsonl",
+    sourceLine: 1,
+  });
+  insertEventRow(statusDb, {
+    ...insertEv,
+    conversationId: "status-conv-2",
+    generationId: "status-gen-2",
+    sourceFile: "status-test.jsonl",
+    sourceLine: 2,
+  });
+  // No rollup — sessions table stays empty (ingest --no-rollup scenario)
+  const statusSessions = queryScalar(
+    statusDb,
+    `SELECT COUNT(DISTINCT conversation_id) AS sessions FROM events WHERE conversation_id IS NOT NULL`
+  );
+  const reportSessions = buildJsonReport(statusDb).totals.sessions;
+  assert.equal(statusSessions.sessions, 2);
+  assert.equal(reportSessions, 2);
+  assert.equal(queryScalar(statusDb, `SELECT COUNT(*) AS n FROM sessions`).n, 0);
+  statusDb.close();
 }
 
 // CLI smoke tests
