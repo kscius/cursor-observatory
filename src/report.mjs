@@ -314,13 +314,14 @@ function renderRecommendationCard(section) {
 
 export async function buildFullReport(db, config = {}, { withLlm = false } = {}) {
   const data = buildJsonReport(db);
-  if (config.recommendations?.enabled === false) return data;
+  const llmOn = Boolean(withLlm || config.recommendations?.llm?.enabled);
+  // `--with-llm` / llm.enabled still produce coaching even when guide cards are disabled
+  if (config.recommendations?.enabled === false && !llmOn) return data;
 
   let recs = buildDeterministicRecommendations(data);
-  const llmOn = withLlm || config.recommendations?.llm?.enabled;
   if (llmOn) {
     const llmConfig = {
-      ...config.recommendations.llm,
+      ...(config.recommendations?.llm || {}),
       enabled: true,
       cacheDir: config.dataDir,
     };
