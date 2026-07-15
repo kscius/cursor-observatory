@@ -39,6 +39,16 @@ function openFile(target) {
   spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
 }
 
+const COMMANDS = new Set([
+  "status",
+  "rollup",
+  "prune",
+  "ingest",
+  "report",
+  "dashboard",
+  "watch",
+]);
+
 function parseIntervalMs(rest, flag = "--interval") {
   const idx = rest.indexOf(flag);
   if (idx === -1 || !rest[idx + 1]) return 30000;
@@ -52,6 +62,9 @@ export async function runCli(argv) {
     printHelp();
     return;
   }
+  if (!COMMANDS.has(cmd)) {
+    throw new Error(`Unknown command: ${cmd}`);
+  }
 
   const config = loadConfig();
   ensureDataDirs(config);
@@ -63,7 +76,7 @@ export async function runCli(argv) {
       db,
       `SELECT
         (SELECT COUNT(*) FROM events) AS events,
-        (SELECT COUNT(*) FROM sessions) AS sessions,
+        (SELECT COUNT(DISTINCT conversation_id) FROM events WHERE conversation_id IS NOT NULL) AS sessions,
         (SELECT COUNT(*) FROM prompts) AS prompts,
         (SELECT COUNT(*) FROM transcripts) AS transcripts,
         (SELECT SUM(CASE WHEN event_type='toolFailure' THEN 1 ELSE 0 END) FROM events) AS tool_failures,
@@ -182,8 +195,6 @@ export async function runCli(argv) {
     });
     return;
   }
-
-  throw new Error(`Unknown command: ${cmd}`);
   } finally {
     if (cmd !== "watch") db.close();
   }

@@ -124,7 +124,7 @@ Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/ob
 
 Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
 
-Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config. Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `watch` picks up LLM coaching only from config (`recommendations.llm.enabled`), not via `--with-llm`.
+Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `watch` picks up LLM coaching only from config (`recommendations.llm.enabled`), not via `--with-llm`. `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
 
 ## Recommendations (Guide cards)
 
