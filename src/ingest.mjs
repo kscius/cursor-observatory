@@ -55,10 +55,14 @@ function ingestJsonlFile(db, filePath, mapFn) {
   let maxLine = startLine;
 
   for (const { line, lineNo, isTrailingPartialLine } of readLinesFrom(filePath, startLine)) {
-    let parsed = false;
+    // Incomplete trailing write (even if currently valid JSON) — wait for a newline
+    // before inserting or checkpointing so a mid-append cannot be locked in.
+    if (isTrailingPartialLine) {
+      skipped++;
+      continue;
+    }
     try {
       const outer = JSON.parse(line);
-      parsed = true;
       const mapped = mapFn(outer, filePath, lineNo);
       if (!mapped) {
         skipped++;
@@ -72,10 +76,8 @@ function ingestJsonlFile(db, filePath, mapFn) {
     } catch {
       skipped++;
     }
-    // Advance past corrupt middle lines; hold checkpoint on a trailing partial line.
-    if (parsed || !isTrailingPartialLine) {
-      maxLine = lineNo;
-    }
+    // Advance past corrupt middle lines once a trailing newline confirms the record.
+    maxLine = lineNo;
   }
 
   setCheckpoint(db, filePath, maxLine, stat.size);
