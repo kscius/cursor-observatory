@@ -155,6 +155,9 @@ export function buildJsonReport(db) {
     totals,
     behavior: {
       ...behavior,
+      // Prefer rolled-up snapshot scores; fall back to live scoring when none yet.
+      fluency_score: behavior?.fluency_score ?? liveBehavior.fluencyScore,
+      archetype: behavior?.archetype ?? liveBehavior.archetype,
       confidence: liveBehavior.confidence,
       dimensions: liveBehavior.dimensions,
     },
@@ -224,6 +227,7 @@ export function buildJsonReport(db) {
       `SELECT tool_name, COUNT(*) AS uses
        FROM events
        WHERE tool_name IS NOT NULL
+         AND event_type != 'toolFailure'
        GROUP BY tool_name
        ORDER BY uses DESC
        LIMIT 15`
@@ -1107,7 +1111,9 @@ window.__REPORT__ = ${jsonEmbed};
     const s = sessions[idx];
     if (!s) return;
     selectedIdx = idx;
-    document.querySelectorAll('.session-row').forEach((r, i) => r.classList.toggle('selected', i === idx));
+    document.querySelectorAll('.session-row').forEach((r) =>
+      r.classList.toggle('selected', Number(r.dataset.index) === idx)
+    );
     const panel = document.getElementById('sessionDetail');
     const grid = document.getElementById('detailGrid');
     const prev = document.getElementById('detailPreview');
@@ -1134,8 +1140,8 @@ window.__REPORT__ = ${jsonEmbed};
 
   function applySessionFilter() {
     const q = (document.getElementById('sessionSearch').value || '').toLowerCase();
-    document.querySelectorAll('.session-row').forEach((row, i) => {
-      const s = sessions[i];
+    document.querySelectorAll('.session-row').forEach((row) => {
+      const s = sessions[Number(row.dataset.index)];
       if (!s) return;
       const hay = [s.project, s.model_primary, s.archetype, s.first_prompt_preview, s.conversation_id].join(' ').toLowerCase();
       const matchProject = !projectFilter || (s.project || '').toLowerCase().includes(projectFilter.toLowerCase()) || projectFilter.toLowerCase().includes((s.project || '').toLowerCase());
