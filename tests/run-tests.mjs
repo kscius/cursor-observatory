@@ -221,8 +221,10 @@ const insertCapEvent = capDb.prepare(
    VALUES (?, 'preToolUse', ?, ?, ?)`
 );
 for (let i = 0; i < 85; i++) {
+  const sec = String(i % 60).padStart(2, "0");
+  const min = String(Math.floor(i / 60)).padStart(2, "0");
   insertCapEvent.run(
-    `2026-06-20T10:00:${String(i).padStart(2, "0")}.000Z`,
+    `2026-06-20T10:${min}:${sec}.000Z`,
     capConv,
     "cap.jsonl",
     i + 1
@@ -1260,6 +1262,45 @@ assert.equal(
 );
 partialDb.close();
 
+// Parseable JSON without a trailing newline must not insert or advance the checkpoint
+const parseableHooksDir = path.join(tmp, "hooks-parseable-partial", "logs");
+fs.mkdirSync(parseableHooksDir, { recursive: true });
+const parseableAuditPath = path.join(parseableHooksDir, "agent-audit.jsonl");
+const parseableLine = JSON.stringify({
+  timestamp: "2026-06-21T13:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-parseable-partial",
+      hook_event_name: "stop",
+      model: "model-c",
+    }),
+  },
+});
+fs.writeFileSync(parseableAuditPath, parseableLine); // no trailing newline
+const parseableDb = openDatabase(path.join(tmp, "parseable-partial.db"));
+const parseableFirst = ingestAuditLogs(parseableDb, parseableHooksDir, false);
+assert.equal(parseableFirst.inserted, 0);
+assert.equal(parseableFirst.skipped, 1);
+assert.equal(
+  parseableDb.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(parseableAuditPath)
+    ?.last_line ?? 0,
+  0
+);
+assert.equal(
+  parseableDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-parseable-partial")
+    .n,
+  0
+);
+fs.writeFileSync(parseableAuditPath, parseableLine + "\n");
+const parseableSecond = ingestAuditLogs(parseableDb, parseableHooksDir, false);
+assert.equal(parseableSecond.inserted, 1);
+assert.equal(
+  parseableDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-parseable-partial")
+    .n,
+  1
+);
+parseableDb.close();
+
 // Corrupt middle JSONL line should still advance checkpoint
 const corruptHooksDir = path.join(tmp, "hooks-corrupt", "logs");
 fs.mkdirSync(corruptHooksDir, { recursive: true });
@@ -1314,6 +1355,61 @@ corruptDb.close();
   assert.ok(html.includes("function escHtml"));
   assert.ok(html.includes("escHtml(s.project"));
   assert.ok(html.includes("escHtml(ev.type"));
+  assert.match(html, /sessions\[Number\(row\.dataset\.index\)\]/);
+  assert.match(html, /Number\(r\.dataset\.index\) === idx/);
+}
+
+// topTools must not count toolFailure rows as uses
+{
+  const toolsDb = openDatabase(path.join(tmp, "top-tools.db"));
+  toolsDb
+    .prepare(
+      `INSERT INTO events (ts, event_type, conversation_id, tool_name, source_file, source_line)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("2026-06-20T10:00:00.000Z", "preToolUse", "conv-tools", "Shell", "t.jsonl", 1);
+  toolsDb
+    .prepare(
+      `INSERT INTO events (ts, event_type, conversation_id, tool_name, source_file, source_line)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("2026-06-20T10:01:00.000Z", "toolFailure", "conv-tools", "Shell", "t.jsonl", 2);
+  toolsDb
+    .prepare(
+      `INSERT INTO events (ts, event_type, conversation_id, tool_name, source_file, source_line)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run("2026-06-20T10:02:00.000Z", "toolFailure", "conv-tools", "Read", "t.jsonl", 3);
+  const toolsReport = buildJsonReport(toolsDb);
+  assert.deepEqual(
+    toolsReport.topTools.map((r) => ({ tool_name: r.tool_name, uses: r.uses })),
+    [{ tool_name: "Shell", uses: 1 }]
+  );
+  assert.equal(toolsReport.toolFailures.length, 2);
+  toolsDb.close();
+}
+
+// Live fluency/archetype surface when no behavior_snapshots row exists yet
+{
+  const liveDb = openDatabase(path.join(tmp, "live-behavior.db"));
+  liveDb
+    .prepare(
+      `INSERT INTO prompts (conversation_id, prompt_idx, ts, preview, source)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(
+      "conv-live",
+      0,
+      "2026-06-20T10:00:00.000Z",
+      "Please implement the API endpoint and verify with npm test",
+      "transcript"
+    );
+  const liveReport = buildJsonReport(liveDb);
+  assert.equal(typeof liveReport.behavior.fluency_score, "number");
+  assert.ok(liveReport.behavior.fluency_score >= 0);
+  assert.ok(liveReport.behavior.archetype);
+  assert.ok(liveReport.behavior.dimensions?.contextSetting != null);
+  liveDb.close();
 }
 
 // --with-llm still builds recommendations when guide cards are disabled
@@ -1398,6 +1494,7 @@ try {
   await runCli(["--help"]);
   assert.ok(helpLines.some((line) => line.includes("cursor-observatory")));
   assert.ok(helpLines.some((line) => line.includes("dashboard")));
+  assert.ok(helpLines.some((line) => /interval.*seconds/i.test(line)));
 } finally {
   console.log = origLog;
 }

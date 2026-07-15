@@ -16,7 +16,7 @@ Usage:
   cursor-observatory rollup
   cursor-observatory report [--json] [--with-llm]
   cursor-observatory dashboard [--full] [--no-open] [--with-llm]
-  cursor-observatory watch [--interval 30]
+  cursor-observatory watch [--interval 30]   (interval in seconds)
   cursor-observatory prune
   cursor-observatory status
 
@@ -35,7 +35,7 @@ function openFile(target) {
   const platform = process.platform;
   const cmd = platform === "win32" ? "cmd" : platform === "darwin" ? "open" : "xdg-open";
   const args =
-    platform === "win32" ? ["/c", "start", "", target] : [target];
+    platform === "win32" ? ["/c", "start", "", `"${target}"`] : [target];
   spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
 }
 
