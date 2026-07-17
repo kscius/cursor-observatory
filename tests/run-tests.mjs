@@ -48,6 +48,9 @@ assert.equal(hashPrompt("same"), hashPrompt("same"));
 assert.notEqual(hashPrompt("a"), hashPrompt("b"));
 assert.match(sanitizePreview("x".repeat(200), 10), /…$/);
 assert.equal(primaryWorkspace(["/c:/Development/Foo"]), `C:${path.sep}Development${path.sep}Foo`);
+assert.equal(primaryWorkspace([null, "/c:/Development/Bar"]), `C:${path.sep}Development${path.sep}Bar`);
+assert.equal(primaryWorkspace([123, ""]), null);
+assert.equal(primaryWorkspace([]), null);
 assert.equal(
   projectFromTranscriptPath("C:/Users/x/.cursor/projects/c-Development-Demo/agent-transcripts/x.jsonl"),
   `C:${path.sep}Development${path.sep}Demo`
@@ -300,6 +303,38 @@ assert.equal(rollupRow.total_output_tokens, 25);
 assert.equal(rollupRow.tool_count, 2);
 assert.equal(rollupRow.duration_ms, 5000);
 assert.equal(rollupRow.model_primary, "model-a");
+
+// model_primary must ignore non-stop events even when they carry a model
+const modelNoiseConv = "conv-model-noise";
+insertEvent.run(
+  "2026-06-20T11:00:00.000Z",
+  "stop",
+  modelNoiseConv,
+  "composer-2.5",
+  10,
+  1,
+  null,
+  "r-model.jsonl",
+  1
+);
+for (let i = 0; i < 5; i++) {
+  insertEvent.run(
+    `2026-06-20T11:0${i + 1}:00.000Z`,
+    "toolFailure",
+    modelNoiseConv,
+    "noise-model",
+    null,
+    null,
+    null,
+    "r-model.jsonl",
+    i + 2
+  );
+}
+rollupSessions(rollupDb);
+const modelNoiseRow = rollupDb
+  .prepare("SELECT model_primary FROM sessions WHERE conversation_id = ?")
+  .get(modelNoiseConv);
+assert.equal(modelNoiseRow.model_primary, "composer-2.5");
 rollupDb.close();
 
 // Retention: prune events older than N days
@@ -496,6 +531,63 @@ assert.ok(
     .preview.includes("updated prompt after mtime")
 );
 mtimeChangeDb.close();
+
+// Transcript re-ingest: same mtime but changed size re-parses
+const sameMtimeProjectsDir = path.join(tmp, "projects-same-mtime");
+const sameMtimeTranscriptDir = path.join(
+  sameMtimeProjectsDir,
+  "c-Development-SameMtime",
+  "agent-transcripts",
+  "conv-transcript-same-mtime"
+);
+fs.mkdirSync(sameMtimeTranscriptDir, { recursive: true });
+const sameMtimeTranscriptPath = path.join(
+  sameMtimeTranscriptDir,
+  "conv-transcript-same-mtime.jsonl"
+);
+const fixedMtimeMs = Date.now() + 120_000;
+fs.writeFileSync(
+  sameMtimeTranscriptPath,
+  JSON.stringify({
+    role: "user",
+    message: {
+      content: [{ type: "text", text: "<user_query>\ninitial prompt\n</user_query>" }],
+    },
+  }) + "\n"
+);
+fs.utimesSync(sameMtimeTranscriptPath, fixedMtimeMs / 1000, fixedMtimeMs / 1000);
+
+const sameMtimeDb = openDatabase(path.join(tmp, "transcript-same-mtime-size.db"));
+const sameMtimeConfig = { ...transcriptConfig, projectsDir: sameMtimeProjectsDir };
+ingestAll(sameMtimeDb, sameMtimeConfig);
+
+fs.writeFileSync(
+  sameMtimeTranscriptPath,
+  JSON.stringify({
+    role: "user",
+    message: {
+      content: [
+        {
+          type: "text",
+          text: "<user_query>\nupdated prompt with changed size\n</user_query>",
+        },
+      ],
+    },
+  }) + "\n"
+);
+fs.utimesSync(sameMtimeTranscriptPath, fixedMtimeMs / 1000, fixedMtimeMs / 1000);
+
+const sameMtimeChanged = ingestAll(sameMtimeDb, sameMtimeConfig);
+assert.equal(sameMtimeChanged.transcripts.transcripts, 1);
+assert.equal(sameMtimeChanged.transcripts.prompts, 1);
+assert.equal(sameMtimeDb.prepare("SELECT COUNT(*) AS n FROM prompts").get().n, 1);
+assert.ok(
+  sameMtimeDb
+    .prepare("SELECT preview FROM prompts LIMIT 1")
+    .get()
+    .preview.includes("updated prompt with changed size")
+);
+sameMtimeDb.close();
 
 // Incremental ingest: checkpoint resume and dedup on re-ingest
 const cpHooksDir = path.join(tmp, "hooks-cp", "logs");

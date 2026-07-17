@@ -2,7 +2,7 @@
 
 Local analytics for **Cursor** — measure **how much**, **where**, and **how** you work with the agent across all projects on your machine.
 
-Privacy-first: everything runs locally. Your transcripts and hook logs never leave your computer.
+Privacy-first: ingestion, storage, scoring, and recommendations run locally. Your transcripts and hook logs are not uploaded by cursor-observatory. The generated HTML dashboard currently loads Google Fonts and Chart.js from public CDNs when opened in a browser.
 
 Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (behavior) and your existing `~/.cursor/hooks` telemetry (volume).
 

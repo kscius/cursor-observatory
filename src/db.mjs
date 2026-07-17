@@ -144,6 +144,13 @@ export function getTranscriptMtime(db, filePath) {
   return row?.mtime_ms ?? null;
 }
 
+/** Returns stored mtime + size so ingest can detect same-mtime rewrites. */
+export function getTranscriptMetadata(db, filePath) {
+  return (
+    queryScalar(db, `SELECT mtime_ms, file_size FROM transcripts WHERE path = ?`, filePath) ?? null
+  );
+}
+
 export function deletePromptsForConversation(db, conversationId, source = "transcript") {
   db.prepare(`DELETE FROM prompts WHERE conversation_id = ? AND source = ?`).run(
     conversationId,

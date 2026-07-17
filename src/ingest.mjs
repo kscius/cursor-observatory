@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   getCheckpoint,
-  getTranscriptMtime,
+  getTranscriptMetadata,
   deletePromptsForConversation,
   insertEvent,
   setCheckpoint,
@@ -241,10 +241,16 @@ export function ingestTranscripts(db, projectsDir) {
   for (const filePath of files) {
     const stat = fs.statSync(filePath);
     const conversationId = path.basename(filePath, ".jsonl");
-    const prevMtime = getTranscriptMtime(db, filePath);
-    if (prevMtime !== null && prevMtime === stat.mtimeMs) continue;
+    const prevTranscript = getTranscriptMetadata(db, filePath);
+    if (
+      prevTranscript &&
+      prevTranscript.mtime_ms === stat.mtimeMs &&
+      prevTranscript.file_size === stat.size
+    ) {
+      continue;
+    }
 
-    if (prevMtime !== null && prevMtime !== stat.mtimeMs) {
+    if (prevTranscript) {
       deletePromptsForConversation(db, conversationId, "transcript");
     }
 
