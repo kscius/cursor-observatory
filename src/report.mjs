@@ -836,7 +836,7 @@ footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--border); 
     </div>
   </section>
 
-  <footer>Generated locally by cursor-observatory. Your data never left this machine.</footer>
+  <footer>Generated locally by cursor-observatory. Telemetry stays on this machine; the report may load Chart.js/fonts from public CDNs.</footer>
 </div>
 <script>
 window.__REPORT__ = ${jsonEmbed};
