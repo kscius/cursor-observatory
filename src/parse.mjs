@@ -27,7 +27,8 @@ export function projectFromTranscriptPath(transcriptPath) {
 
 export function primaryWorkspace(roots) {
   if (!Array.isArray(roots) || roots.length === 0) return null;
-  const first = roots[0];
+  const first = roots.find((r) => typeof r === "string" && r.length > 0);
+  if (!first) return null;
   const m = first.match(/^\/([a-z]):\//i);
   if (m) {
     const drive = m[1].toUpperCase();
