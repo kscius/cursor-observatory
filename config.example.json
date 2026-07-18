@@ -23,6 +23,7 @@
       "provider": "openai",
       "model": "gpt-4o-mini",
       "apiKeyEnv": "OPENAI_API_KEY",
+      "baseUrl": "https://api.openai.com/v1",
       "useCache": true,
       "sections": ["behavior", "overview", "usage", "sessions", "tools"]
     }
