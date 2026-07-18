@@ -16,7 +16,7 @@ Usage:
   cursor-observatory rollup
   cursor-observatory report [--json] [--with-llm]
   cursor-observatory dashboard [--full] [--no-open] [--with-llm]
-  cursor-observatory watch [--interval 30]   (interval in seconds)
+  cursor-observatory watch [--interval 30] [--with-llm]   (interval in seconds)
   cursor-observatory prune
   cursor-observatory status
 
@@ -49,11 +49,18 @@ const COMMANDS = new Set([
   "watch",
 ]);
 
-function parseIntervalMs(rest, flag = "--interval") {
+export function parseIntervalMs(rest, flag = "--interval") {
   const idx = rest.indexOf(flag);
-  if (idx === -1 || !rest[idx + 1]) return 30000;
-  const n = Number(rest[idx + 1]);
-  return Number.isFinite(n) && n > 0 ? n * 1000 : 30000;
+  if (idx === -1) return 30000;
+  const raw = rest[idx + 1];
+  if (!raw || raw.startsWith("-")) {
+    throw new Error(`${flag} requires a positive number of seconds`);
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`Invalid ${flag} value: ${raw} (expected positive seconds)`);
+  }
+  return n * 1000;
 }
 
 export async function runCli(argv) {
@@ -129,10 +136,10 @@ export async function runCli(argv) {
     const noRollup = rest.includes("--no-rollup");
     if (full) {
       db.exec(`DELETE FROM ingest_checkpoints`);
-      console.log("Full ingest: checkpoints cleared");
+      console.log("Full ingest: checkpoints cleared; transcripts will be re-parsed");
     }
     console.log("Ingesting from", config.cursorHome);
-    const summary = ingestAll(db, config);
+    const summary = ingestAll(db, config, { full });
     console.log("Ingest summary:", JSON.stringify(summary, null, 2));
     if (!noRollup) {
       const roll = runAllRollups(db);
@@ -159,10 +166,10 @@ export async function runCli(argv) {
     const withLlm = rest.includes("--with-llm") || config.recommendations?.llm?.enabled;
     if (full) {
       db.exec(`DELETE FROM ingest_checkpoints`);
-      console.log("Full ingest: checkpoints cleared");
+      console.log("Full ingest: checkpoints cleared; transcripts will be re-parsed");
     }
     console.log("Dashboard: ingest → retention → rollup → report");
-    const summary = ingestAll(db, config);
+    const summary = ingestAll(db, config, { full });
     console.log("Ingest:", JSON.stringify(summary, null, 2));
     applyRetention(db, config);
     const roll = runAllRollups(db);
@@ -178,8 +185,10 @@ export async function runCli(argv) {
 
   if (cmd === "watch") {
     const intervalMs = parseIntervalMs(rest);
+    const withLlm = rest.includes("--with-llm") || config.recommendations?.llm?.enabled;
     const stop = startWatch(config, db, {
       intervalMs,
+      withLlm,
       onRefresh: (paths) => {
         console.log(`  Report: ${paths.latestHtml}`);
       },

@@ -233,7 +233,7 @@ function findTranscriptFiles(projectsDir) {
   return results;
 }
 
-export function ingestTranscripts(db, projectsDir) {
+export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
   const files = findTranscriptFiles(projectsDir);
   let transcripts = 0;
   let prompts = 0;
@@ -243,6 +243,7 @@ export function ingestTranscripts(db, projectsDir) {
     const conversationId = path.basename(filePath, ".jsonl");
     const prevTranscript = getTranscriptMetadata(db, filePath);
     if (
+      !force &&
       prevTranscript &&
       prevTranscript.mtime_ms === stat.mtimeMs &&
       prevTranscript.file_size === stat.size
@@ -336,7 +337,7 @@ export function ingestHookEvents(db, dataDir) {
   });
 }
 
-export function ingestAll(db, config) {
+export function ingestAll(db, config, { full = false } = {}) {
   const summary = { audit: null, session: null, subagent: null, tools: null, hookEvents: null, transcripts: null };
 
   if (config.ingest.auditLogs && config.ingest.hookEvents) {
@@ -365,7 +366,9 @@ export function ingestAll(db, config) {
     summary.hookEvents = ingestHookEvents(db, config.dataDir);
   }
   if (config.ingest.transcripts) {
-    summary.transcripts = ingestTranscripts(db, config.projectsDir);
+    // --full clears JSONL checkpoints and also forces transcript re-parse
+    // (mtime/size fingerprint would otherwise skip unchanged files).
+    summary.transcripts = ingestTranscripts(db, config.projectsDir, { force: full });
   }
 
   return summary;
