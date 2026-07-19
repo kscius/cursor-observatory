@@ -1216,19 +1216,23 @@ function liveScore(data) {
 
 export async function writeReports(db, reportsDir, config = {}, options = {}) {
   fs.mkdirSync(reportsDir, { recursive: true });
+  const keepSnapshots = options.keepReportSnapshots !== false;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const htmlPath = path.join(reportsDir, `report-${stamp}.html`);
-  const jsonPath = path.join(reportsDir, `report-${stamp}.json`);
+  const htmlPath = keepSnapshots ? path.join(reportsDir, `report-${stamp}.html`) : null;
+  const jsonPath = keepSnapshots ? path.join(reportsDir, `report-${stamp}.json`) : null;
   const latestHtml = path.join(reportsDir, "latest.html");
   const latestJson = path.join(reportsDir, "latest.json");
 
   const data = await buildFullReport(db, config, options);
   const html = buildHtmlReport(data);
+  const json = JSON.stringify(data, null, 2);
 
-  fs.writeFileSync(htmlPath, html, "utf8");
-  fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), "utf8");
+  if (keepSnapshots) {
+    fs.writeFileSync(htmlPath, html, "utf8");
+    fs.writeFileSync(jsonPath, json, "utf8");
+  }
   atomicWriteFile(latestHtml, html);
-  atomicWriteFile(latestJson, JSON.stringify(data, null, 2));
+  atomicWriteFile(latestJson, json);
 
   return { htmlPath, jsonPath, latestHtml, latestJson };
 }
@@ -1236,5 +1240,26 @@ export async function writeReports(db, reportsDir, config = {}, options = {}) {
 function atomicWriteFile(targetPath, contents) {
   const tmpPath = `${targetPath}.${process.pid}.tmp`;
   fs.writeFileSync(tmpPath, contents, "utf8");
-  fs.renameSync(tmpPath, targetPath);
+  try {
+    fs.renameSync(tmpPath, targetPath);
+  } catch (err) {
+    // Windows may refuse rename over an existing file; fall back to copy.
+    if (process.platform !== "win32" || !fs.existsSync(targetPath)) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    }
+    try {
+      fs.copyFileSync(tmpPath, targetPath);
+    } finally {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }

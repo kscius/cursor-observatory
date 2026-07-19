@@ -18,7 +18,7 @@ function debounce(fn, ms) {
   return debounced;
 }
 
-export function startWatch(config, db, { intervalMs = 30000, onRefresh } = {}) {
+export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm = false } = {}) {
   let inFlight = false;
   let pending = false;
 
@@ -35,8 +35,12 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh } = {}) {
           ingestAll(db, config);
           applyRetention(db, config);
           runAllRollups(db);
-          const withLlm = config.recommendations?.llm?.enabled;
-          const paths = await writeReports(db, config.reportsDir, config, { withLlm });
+          const llmOn = withLlm || config.recommendations?.llm?.enabled;
+          // Watch refreshes often; only update latest.* to avoid unbounded report-* growth.
+          const paths = await writeReports(db, config.reportsDir, config, {
+            withLlm: llmOn,
+            keepReportSnapshots: false,
+          });
           await onRefresh?.(paths);
           console.log(`[watch] refreshed ${new Date().toISOString()}`);
         } catch (err) {

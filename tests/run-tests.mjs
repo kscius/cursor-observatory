@@ -28,7 +28,7 @@ import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../s
 import { enrichWithLlm } from "../src/llm.mjs";
 import { expandHome, loadConfig } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
-import { runCli } from "../src/cli.mjs";
+import { runCli, parseIntervalMs } from "../src/cli.mjs";
 import { startWatch } from "../src/watch.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -588,6 +588,40 @@ assert.ok(
     .preview.includes("updated prompt with changed size")
 );
 sameMtimeDb.close();
+
+// --full forces transcript re-parse even when mtime+size are unchanged
+const fullForceProjectsDir = path.join(tmp, "projects-full-force");
+const fullForceTranscriptDir = path.join(
+  fullForceProjectsDir,
+  "c-Development-FullForce",
+  "agent-transcripts",
+  "conv-transcript-full-force"
+);
+fs.mkdirSync(fullForceTranscriptDir, { recursive: true });
+const fullForceTranscriptPath = path.join(
+  fullForceTranscriptDir,
+  "conv-transcript-full-force.jsonl"
+);
+const fullForceMtimeMs = Date.now() + 180_000;
+fs.writeFileSync(
+  fullForceTranscriptPath,
+  JSON.stringify({
+    role: "user",
+    message: {
+      content: [{ type: "text", text: "<user_query>\noriginal full-force prompt\n</user_query>" }],
+    },
+  }) + "\n"
+);
+fs.utimesSync(fullForceTranscriptPath, fullForceMtimeMs / 1000, fullForceMtimeMs / 1000);
+const fullForceDb = openDatabase(path.join(tmp, "transcript-full-force.db"));
+const fullForceConfig = { ...transcriptConfig, projectsDir: fullForceProjectsDir };
+assert.equal(ingestAll(fullForceDb, fullForceConfig).transcripts.transcripts, 1);
+assert.equal(ingestAll(fullForceDb, fullForceConfig).transcripts.transcripts, 0);
+const fullForceAgain = ingestAll(fullForceDb, fullForceConfig, { full: true });
+assert.equal(fullForceAgain.transcripts.transcripts, 1);
+assert.equal(fullForceAgain.transcripts.prompts, 1);
+assert.equal(fullForceDb.prepare("SELECT COUNT(*) AS n FROM prompts").get().n, 1);
+fullForceDb.close();
 
 // Incremental ingest: checkpoint resume and dedup on re-ingest
 const cpHooksDir = path.join(tmp, "hooks-cp", "logs");
@@ -1226,9 +1260,28 @@ const written = await writeReports(reportDb, reportsDir, {
 });
 assert.ok(fs.existsSync(written.latestHtml));
 assert.ok(fs.existsSync(written.latestJson));
+assert.ok(written.htmlPath && fs.existsSync(written.htmlPath));
+assert.ok(written.jsonPath && fs.existsSync(written.jsonPath));
 const html = fs.readFileSync(written.latestHtml, "utf8");
 assert.ok(html.includes("<!DOCTYPE html>"));
 assert.equal(fs.readdirSync(reportsDir).filter((f) => f.endsWith(".tmp")).length, 0);
+
+// keepReportSnapshots: false writes only latest.* (watch mode)
+const latestOnlyDir = path.join(tmp, "reports-latest-only");
+const latestOnly = await writeReports(
+  reportDb,
+  latestOnlyDir,
+  { recommendations: { enabled: false, llm: { enabled: false } } },
+  { keepReportSnapshots: false }
+);
+assert.equal(latestOnly.htmlPath, null);
+assert.equal(latestOnly.jsonPath, null);
+assert.ok(fs.existsSync(latestOnly.latestHtml));
+assert.ok(fs.existsSync(latestOnly.latestJson));
+assert.equal(
+  fs.readdirSync(latestOnlyDir).filter((f) => f.startsWith("report-")).length,
+  0
+);
 reportDb.close();
 
 // Collector subprocess: event alias + OBSERVATORY_DATA_DIR
@@ -1309,6 +1362,10 @@ await new Promise((r) => setTimeout(r, 150));
 stopWatch();
 assert.ok(refreshes >= 1);
 assert.equal(maxActive, 1);
+const watchReportFiles = fs.readdirSync(path.join(tmp, "watch-reports"));
+assert.ok(watchReportFiles.includes("latest.html"));
+assert.ok(watchReportFiles.includes("latest.json"));
+assert.equal(watchReportFiles.filter((f) => f.startsWith("report-")).length, 0);
 watchDb.close();
 
 // Trailing incomplete JSONL line must not advance checkpoint until completed
@@ -1587,10 +1644,19 @@ try {
   assert.ok(helpLines.some((line) => line.includes("cursor-observatory")));
   assert.ok(helpLines.some((line) => line.includes("dashboard")));
   assert.ok(helpLines.some((line) => /interval.*seconds/i.test(line)));
+  assert.ok(helpLines.some((line) => line.includes("watch") && line.includes("--with-llm")));
 } finally {
   console.log = origLog;
 }
 await assert.rejects(() => runCli(["not-a-command"]), /Unknown command: not-a-command/);
+
+// --interval validation
+assert.equal(parseIntervalMs([]), 30000);
+assert.equal(parseIntervalMs(["--interval", "60"]), 60000);
+assert.throws(() => parseIntervalMs(["--interval"]), /requires a positive number/);
+assert.throws(() => parseIntervalMs(["--interval", "0"]), /Invalid --interval/);
+assert.throws(() => parseIntervalMs(["--interval", "-5"]), /requires a positive number|Invalid --interval/);
+assert.throws(() => parseIntervalMs(["--interval", "abc"]), /Invalid --interval/);
 
 retentionDb.close();
 

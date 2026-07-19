@@ -41,7 +41,7 @@ This will:
 
 ```bash
 node bin/cursor-observatory.mjs ingest          # incremental ingest + rollup
-node bin/cursor-observatory.mjs ingest --full   # clear checkpoints & rescan JSONL from line 0 (existing rows deduped)
+node bin/cursor-observatory.mjs ingest --full   # clear checkpoints & re-parse transcripts (JSONL rows deduped)
 node bin/cursor-observatory.mjs ingest --no-rollup  # ingest only (faster)
 node bin/cursor-observatory.mjs rollup          # recompute aggregates only
 node bin/cursor-observatory.mjs report          # rollup + regenerate reports
@@ -52,7 +52,8 @@ node bin/cursor-observatory.mjs dashboard --full     # full rescan + refresh
 node bin/cursor-observatory.mjs dashboard --no-open  # headless / CI (skip browser)
 node bin/cursor-observatory.mjs dashboard --with-llm
 node bin/cursor-observatory.mjs watch           # auto-refresh on file changes (30s interval, 2s debounce)
-node bin/cursor-observatory.mjs watch --interval 60  # interval in seconds
+node bin/cursor-observatory.mjs watch --interval 60  # interval in seconds (must be > 0)
+node bin/cursor-observatory.mjs watch --with-llm     # enable LLM coaching during watch refreshes
 node bin/cursor-observatory.mjs prune           # apply retention (if configured)
 node bin/cursor-observatory.mjs status          # DB summary
 npm test
@@ -64,7 +65,7 @@ npm test
 
 **Refresh reports** — run `npm run dashboard` when you want an updated view.
 
-**Near real-time** — run `npm run watch` in a terminal; it re-ingests when hook logs, transcripts, or collector event files change (plus periodic refresh every 30s by default). Each refresh runs ingest → retention → rollup → report. Overlapping refreshes are serialized so the DB is not updated concurrently.
+**Near real-time** — run `npm run watch` in a terminal; it re-ingests when hook logs, transcripts, or collector event files change (plus periodic refresh every 30s by default). Each refresh runs ingest → retention → rollup → report. Overlapping refreshes are serialized so the DB is not updated concurrently. Watch updates only `latest.html` / `latest.json` (no stamped `report-*` files) so frequent refreshes do not fill the reports directory.
 
 **Scheduled (Windows)** — optional Task Scheduler entry:
 
@@ -124,7 +125,7 @@ Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/ob
 
 Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
 
-Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `watch` picks up LLM coaching only from config (`recommendations.llm.enabled`), not via `--with-llm`. `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
+Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`, including `watch --with-llm`). Optional `recommendations.llm.baseUrl` for OpenAI-compatible endpoints (default `https://api.openai.com/v1`; only the OpenAI chat-completions shape is supported today). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
 
 ## Recommendations (Guide cards)
 
