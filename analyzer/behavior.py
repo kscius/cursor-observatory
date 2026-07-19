@@ -14,8 +14,24 @@ ACTION = re.compile(
 CONSTRAINT = re.compile(r"\b(must|should|only|without|never|ensure)\b", re.I)
 
 
+def _coerce_prompts(prompts) -> list[str]:
+    if not isinstance(prompts, list):
+        return []
+    real: list[str] = []
+    for p in prompts:
+        if isinstance(p, str):
+            text = p.strip()
+        elif p is None:
+            continue
+        else:
+            text = str(p).strip()
+        if text:
+            real.append(text)
+    return real
+
+
 def score_prompts(prompts: list[str]) -> dict:
-    real = [p.strip() for p in prompts if p and p.strip()]
+    real = _coerce_prompts(prompts)
     n = len(real)
     if n == 0:
         return {"fluency_score": 50, "archetype": "Sprinter", "real_prompt_count": 0}
@@ -38,7 +54,8 @@ def main() -> int:
         print("Usage: behavior.py <prompts.json>", file=sys.stderr)
         return 1
     data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    result = score_prompts(data if isinstance(data, list) else data.get("prompts", []))
+    prompts = data if isinstance(data, list) else data.get("prompts", [])
+    result = score_prompts(prompts if isinstance(prompts, list) else [])
     print(json.dumps(result, indent=2))
     return 0
 
