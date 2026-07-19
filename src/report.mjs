@@ -293,9 +293,18 @@ function renderRecommendationCard(section) {
         </div>`
     )
     .join("");
-  const insights = (section.insights || []).map((i) => `<li>${esc(i)}</li>`).join("");
-  const actions = (section.actions || []).map((a) => `<li>${esc(a)}</li>`).join("");
-  const llmActions = (section.llmActions || []).map((a) => `<li>${esc(a)}</li>`).join("");
+  const insights = (Array.isArray(section.insights) ? section.insights : [])
+    .filter((i) => typeof i === "string")
+    .map((i) => `<li>${esc(i)}</li>`)
+    .join("");
+  const actions = (Array.isArray(section.actions) ? section.actions : [])
+    .filter((a) => typeof a === "string")
+    .map((a) => `<li>${esc(a)}</li>`)
+    .join("");
+  const llmActions = (Array.isArray(section.llmActions) ? section.llmActions : [])
+    .filter((a) => typeof a === "string")
+    .map((a) => `<li>${esc(a)}</li>`)
+    .join("");
 
   return `<aside class="reco-card" aria-labelledby="reco-${slug}">
     <div class="reco-header">
@@ -351,7 +360,7 @@ export function buildHtmlReport(data) {
   const inputTok = data.totals?.input_tokens || 0;
   const outputTok = data.totals?.output_tokens || 0;
   const cacheRead = data.totals?.cache_read_tokens || 0;
-  const ratio = outputTok > 0 ? (inputTok / outputTok).toFixed(1) : "—";
+  const ratioLabel = outputTok > 0 ? `${(inputTok / outputTok).toFixed(1)}:1` : "—";
 
   const projectRows = tableRows(
     data.topProjects,
@@ -676,7 +685,7 @@ footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--border); 
       <div class="card"><div class="mut">Input tokens</div><div class="score" style="font-size:28px" title="${fmt(inputTok)}">${fmtCompact(inputTok)}</div></div>
       <div class="card"><div class="mut">Output tokens</div><div class="score" style="font-size:28px" title="${fmt(outputTok)}">${fmtCompact(outputTok)}</div></div>
       <div class="card"><div class="mut">Cache read</div><div class="score" style="font-size:28px" title="${fmt(cacheRead)}">${fmtCompact(cacheRead)}</div></div>
-      <div class="card"><div class="mut">In:Out ratio</div><div class="score" style="font-size:28px">${ratio}:1</div></div>
+      <div class="card"><div class="mut">In:Out ratio</div><div class="score" style="font-size:28px">${ratioLabel}</div></div>
       <div class="card"><div class="mut">Tool failures</div><div class="score" style="font-size:28px;color:${(data.totals?.tool_failures||0)>0?'#f87171':'var(--accent)'}">${fmt(data.totals?.tool_failures)}</div></div>
     </div>
 
@@ -1145,7 +1154,13 @@ window.__REPORT__ = ${jsonEmbed};
       const s = sessions[Number(row.dataset.index)];
       if (!s) return;
       const hay = [s.project, s.model_primary, s.archetype, s.first_prompt_preview, s.conversation_id].join(' ').toLowerCase();
-      const matchProject = !projectFilter || (s.project || '').toLowerCase().includes(projectFilter.toLowerCase()) || projectFilter.toLowerCase().includes((s.project || '').toLowerCase());
+      const filterProject = (projectFilter || '').toLowerCase();
+      const sessionProject = (row.dataset.project || (s.project || '')).toLowerCase();
+      // Empty session project must not match every filter: ''.includes is always true for the reverse clause.
+      const matchProject =
+        !filterProject ||
+        (Boolean(sessionProject) &&
+          (sessionProject.includes(filterProject) || filterProject.includes(sessionProject)));
       const matchQ = !q || hay.includes(q);
       row.style.display = matchProject && matchQ ? '' : 'none';
     });

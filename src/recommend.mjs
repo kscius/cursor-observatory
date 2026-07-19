@@ -218,6 +218,11 @@ function avgPromptsPerSession(sessions) {
   return avg.toFixed(1);
 }
 
+function normalizeLlmActions(actions) {
+  if (!Array.isArray(actions)) return [];
+  return actions.filter((a) => typeof a === "string" && a.trim());
+}
+
 export function mergeLlmRecommendations(det, llmSections) {
   if (!llmSections) return det;
   const out = { ...det, source: "hybrid", sections: { ...det.sections } };
@@ -225,8 +230,8 @@ export function mergeLlmRecommendations(det, llmSections) {
     if (!out.sections[key] || !llm) continue;
     out.sections[key] = {
       ...out.sections[key],
-      llmSummary: llm.summary || null,
-      llmActions: llm.actions || [],
+      llmSummary: typeof llm.summary === "string" ? llm.summary : null,
+      llmActions: normalizeLlmActions(llm.actions),
     };
   }
   return out;
