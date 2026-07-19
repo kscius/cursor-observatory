@@ -207,6 +207,40 @@ assert.equal(merged.source, "hybrid");
 assert.equal(merged.sections.behavior.llmSummary, "test summary");
 assert.deepEqual(merged.sections.behavior.llmActions, ["run tests"]);
 
+// Malformed LLM actions must not crash HTML rendering (truthy non-arrays)
+const mergedBadActions = mergeLlmRecommendations(recs, {
+  behavior: { summary: "ok", actions: "not-an-array" },
+  overview: { summary: 42, actions: { a: 1 } },
+});
+assert.deepEqual(mergedBadActions.sections.behavior.llmActions, []);
+assert.equal(mergedBadActions.sections.overview.llmSummary, null);
+assert.deepEqual(mergedBadActions.sections.overview.llmActions, []);
+const mergedFilteredActions = mergeLlmRecommendations(recs, {
+  behavior: { summary: "ok", actions: ["keep", "", 3, null, "  also"] },
+});
+assert.deepEqual(mergedFilteredActions.sections.behavior.llmActions, ["keep", "  also"]);
+assert.doesNotThrow(() =>
+  buildHtmlReport({
+    generatedAt: "2026-07-19T00:00:00.000Z",
+    totals: { input_tokens: 10, output_tokens: 0 },
+    today: {},
+    behavior: null,
+    daily: [],
+    hourlyToday: [],
+    topProjects: [],
+    topModels: [],
+    topTools: [],
+    toolFailures: [],
+    toolUsage: [],
+    recentSessions: [],
+    sessionEvents: {},
+    recommendations: {
+      enabled: true,
+      sections: mergedBadActions.sections,
+    },
+  })
+);
+
 const full = await buildFullReport(db, { recommendations: { enabled: true } });
 assert.ok(full.recommendations?.sections?.overview);
 
@@ -1416,7 +1450,7 @@ corruptDb.close();
 {
   const html = buildHtmlReport({
     generatedAt: "2026-07-12T00:00:00.000Z",
-    totals: {},
+    totals: { input_tokens: 100, output_tokens: 0 },
     today: {},
     behavior: null,
     daily: [],
@@ -1449,6 +1483,24 @@ corruptDb.close();
   assert.ok(html.includes("escHtml(ev.type"));
   assert.match(html, /sessions\[Number\(row\.dataset\.index\)\]/);
   assert.match(html, /Number\(r\.dataset\.index\) === idx/);
+  // Zero output tokens must not render "—:1"
+  assert.ok(html.includes(">In:Out ratio</div><div class=\"score\" style=\"font-size:28px\">—</div>"));
+  assert.ok(!html.includes(">In:Out ratio</div><div class=\"score\" style=\"font-size:28px\">—:1</div>"));
+  // Empty session project must not match an active project filter
+  assert.match(html, /Boolean\(sessionProject\)/);
+  assert.match(html, /filterProject\.includes\(sessionProject\)/);
+}
+
+// Optional Python analyzer: coerce non-string prompt entries
+{
+  const behaviorPy = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "analyzer", "behavior.py");
+  const promptsJson = path.join(tmp, "behavior-prompts.json");
+  fs.writeFileSync(promptsJson, JSON.stringify({ prompts: ["fix the bug", 123, null, ""] }));
+  const py = spawnSync("python3", [behaviorPy, promptsJson], { encoding: "utf8" });
+  assert.equal(py.status, 0, py.stderr || py.stdout);
+  const scored = JSON.parse(py.stdout);
+  assert.equal(scored.real_prompt_count, 2);
+  assert.ok(typeof scored.fluency_score === "number");
 }
 
 // topTools must not count toolFailure rows as uses

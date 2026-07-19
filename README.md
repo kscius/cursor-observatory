@@ -37,6 +37,8 @@ This will:
 2. Apply retention (if configured), then aggregate into SQLite at `~/.cursor/observatory/observatory.db`
 3. Generate `~/.cursor/observatory/reports/latest.html` (and `latest.json`) and open the HTML report
 
+On a fresh machine with no Cursor telemetry yet, the first dashboard is empty — that is expected. Run `status` or check `~/.cursor/hooks/logs/` if you expected data.
+
 ## CLI
 
 ```bash
