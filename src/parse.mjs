@@ -70,7 +70,7 @@ export function unwrapAuditEntry(outer) {
     generationId: inner.generation_id || null,
     model: inner.model || outer.model || null,
     modelId: inner.model_id || null,
-    status: inner.status || null,
+    status: inner.status || inner.final_status || inner.reason || null,
     loopCount: inner.loop_count ?? null,
     inputTokens: num(inner.input_tokens),
     outputTokens: num(inner.output_tokens),
