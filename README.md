@@ -89,7 +89,7 @@ Use `npm run ingest` alone only if you want the DB updated without regenerating 
 | Source | Path |
 |--------|------|
 | Hook audit (tokens, tools, sessions) | `~/.cursor/hooks/logs/agent-audit.jsonl` |
-| Rotated audit (when `includeRotatedLogs`) | `~/.cursor/hooks/logs/agent-audit.jsonl.old` |
+| Rotated audit (when `includeRotatedLogs`) | `~/.cursor/hooks/logs/agent-audit.jsonl.old` (re-read as a full snapshot on each ingest) |
 | Session end | `~/.cursor/hooks/logs/session-summary.jsonl` |
 | Subagents | `~/.cursor/hooks/logs/subagent-audit.jsonl` |
 | Tool failures | `~/.cursor/hooks/logs/tool-failures.jsonl` |
