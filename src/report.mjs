@@ -82,7 +82,7 @@ export function buildSessionEventMap(db, sessions) {
             input_tokens, output_tokens, command, prompt_preview, status, duration_ms
      FROM events
      WHERE conversation_id IN (${placeholders})
-     ORDER BY ts ASC`,
+     ORDER BY ts IS NULL, ts ASC, id ASC`,
     ...ids
   );
 
@@ -235,8 +235,15 @@ export function buildJsonReport(db) {
     toolFailures: queryAll(
       db,
       `SELECT tool_name, COUNT(*) AS failures,
-              MAX(prompt_preview) AS last_error
-       FROM events
+              (
+                SELECT e2.prompt_preview
+                FROM events e2
+                WHERE e2.event_type = 'toolFailure'
+                  AND e2.tool_name = e.tool_name
+                ORDER BY e2.ts IS NULL, e2.ts DESC, e2.id DESC
+                LIMIT 1
+              ) AS last_error
+       FROM events e
        WHERE event_type='toolFailure'
        GROUP BY tool_name
        ORDER BY failures DESC
@@ -1191,23 +1198,49 @@ window.__REPORT__ = ${jsonEmbed};
     row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
   });
 
+  async function copyText(text) {
+    if (!text) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) { /* fall through to execCommand */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
   document.querySelectorAll('.id-btn').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      navigator.clipboard.writeText(btn.dataset.copy || '').then(() => {
+      const value = btn.dataset.copy || '';
+      copyText(value).then((ok) => {
+        if (!ok) return;
         btn.textContent = 'copied!';
-        setTimeout(() => { btn.textContent = (btn.dataset.copy || '').slice(0, 8); }, 1200);
+        setTimeout(() => { btn.textContent = value.slice(0, 8); }, 1200);
       });
     });
   });
 
   document.getElementById('copyIdBtn').addEventListener('click', () => {
     const id = document.getElementById('copyIdBtn').dataset.id;
-    if (id) navigator.clipboard.writeText(id);
+    if (id) copyText(id);
   });
   document.getElementById('copyTranscriptBtn').addEventListener('click', () => {
     const p = document.getElementById('copyTranscriptBtn').dataset.path;
-    if (p) navigator.clipboard.writeText(p);
+    if (p) copyText(p);
   });
 
   document.querySelectorAll('.reco-toggle').forEach(btn => {
