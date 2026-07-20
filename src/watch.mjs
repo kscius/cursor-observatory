@@ -21,35 +21,40 @@ function debounce(fn, ms) {
 export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm = false } = {}) {
   let inFlight = false;
   let pending = false;
+  let refreshPromise = null;
 
   const refresh = async () => {
     if (inFlight) {
       pending = true;
-      return;
+      return refreshPromise;
     }
     inFlight = true;
-    try {
-      do {
-        pending = false;
-        try {
-          ingestAll(db, config);
-          applyRetention(db, config);
-          runAllRollups(db);
-          const llmOn = withLlm || config.recommendations?.llm?.enabled;
-          // Watch refreshes often; only update latest.* to avoid unbounded report-* growth.
-          const paths = await writeReports(db, config.reportsDir, config, {
-            withLlm: llmOn,
-            keepReportSnapshots: false,
-          });
-          await onRefresh?.(paths);
-          console.log(`[watch] refreshed ${new Date().toISOString()}`);
-        } catch (err) {
-          console.error("[watch] error:", err.message || err);
-        }
-      } while (pending);
-    } finally {
-      inFlight = false;
-    }
+    refreshPromise = (async () => {
+      try {
+        do {
+          pending = false;
+          try {
+            ingestAll(db, config);
+            applyRetention(db, config);
+            runAllRollups(db);
+            const llmOn = withLlm || config.recommendations?.llm?.enabled;
+            // Watch refreshes often; only update latest.* to avoid unbounded report-* growth.
+            const paths = await writeReports(db, config.reportsDir, config, {
+              withLlm: llmOn,
+              keepReportSnapshots: false,
+            });
+            await onRefresh?.(paths);
+            console.log(`[watch] refreshed ${new Date().toISOString()}`);
+          } catch (err) {
+            console.error("[watch] error:", err.message || err);
+          }
+        } while (pending);
+      } finally {
+        inFlight = false;
+        refreshPromise = null;
+      }
+    })();
+    return refreshPromise;
   };
 
   const debounced = debounce(refresh, 2000);
@@ -77,9 +82,11 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm 
   console.log(`Watching hooks + transcripts (refresh every ${intervalMs / 1000}s)`);
   console.log("Press Ctrl+C to stop.");
 
-  return () => {
+  return async () => {
     debounced.cancel();
     clearInterval(timer);
     for (const w of watchers) w.close();
+    // Wait for an in-flight refresh so CLI can close SQLite safely.
+    if (refreshPromise) await refreshPromise;
   };
 }

@@ -194,10 +194,13 @@ export async function runCli(argv) {
       },
     });
     await new Promise((resolve) => {
-      const onSignal = () => {
-        stop();
-        db.close();
-        resolve();
+      const onSignal = async () => {
+        try {
+          await stop();
+        } finally {
+          db.close();
+          resolve();
+        }
       };
       process.once("SIGINT", onSignal);
       process.once("SIGTERM", onSignal);
