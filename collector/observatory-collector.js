@@ -45,6 +45,28 @@ function resolveLogDir() {
   return path.join(home, ".cursor", "observatory", "events");
 }
 
+/** Normalize hook timestamps to ISO-8601 so ingest ordering stays consistent. */
+function normalizeTs(ts) {
+  if (typeof ts === "number" && Number.isFinite(ts)) {
+    const ms = ts < 1e12 ? ts * 1000 : ts;
+    const d = new Date(ms);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  }
+  if (typeof ts === "string" && ts.trim()) {
+    const trimmed = ts.trim();
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) {
+        const ms = n < 1e12 ? n * 1000 : n;
+        const d = new Date(ms);
+        if (!Number.isNaN(d.getTime())) return d.toISOString();
+      }
+    }
+    return ts;
+  }
+  return new Date().toISOString();
+}
+
 const LOG_DIR = resolveLogDir();
 const LOG_FILE = path.join(LOG_DIR, "hook-events.jsonl");
 
@@ -66,14 +88,14 @@ async function main() {
   }
 
   const eventName = payload.hook_event_name || payload.event;
-  if (!eventName) {
+  if (typeof eventName !== "string" || !eventName.trim()) {
     process.stdout.write("{}\n");
     return;
   }
 
   const entry = {
-    ts: payload.timestamp || payload.ts || new Date().toISOString(),
-    hook_event_name: eventName,
+    ts: normalizeTs(payload.timestamp ?? payload.ts),
+    hook_event_name: eventName.trim(),
     conversation_id: payload.conversation_id || payload.session_id || null,
     generation_id: payload.generation_id || null,
     model: payload.model || null,
@@ -94,7 +116,7 @@ async function main() {
           : null,
     composer_mode: payload.composer_mode || null,
     cursor_version: payload.cursor_version || null,
-    status: payload.status || payload.final_status || null,
+    status: payload.status || payload.final_status || payload.reason || null,
     subagent_type: payload.subagent_type || null,
   };
 
