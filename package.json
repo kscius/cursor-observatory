@@ -12,6 +12,7 @@
     "rollup": "node bin/cursor-observatory.mjs rollup",
     "report": "node bin/cursor-observatory.mjs report",
     "dashboard": "node bin/cursor-observatory.mjs dashboard",
+    "dashboard:headless": "node bin/cursor-observatory.mjs dashboard --no-open",
     "watch": "node bin/cursor-observatory.mjs watch",
     "prune": "node bin/cursor-observatory.mjs prune",
     "status": "node bin/cursor-observatory.mjs status",
