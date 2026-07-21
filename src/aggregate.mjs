@@ -18,10 +18,14 @@ export function rollupSessions(db) {
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(cache_read_tokens,0) ELSE 0 END) AS total_cache_read,
       SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END) AS generation_count,
       SUM(CASE WHEN event_type IN ('preToolUse','postToolUse','afterShellExecution') THEN 1 ELSE 0 END) AS tool_count,
-      SUM(CASE WHEN event_type = 'sessionEnd' THEN COALESCE(duration_ms,0) ELSE 0 END) AS duration_ms,
+      CASE
+        WHEN SUM(CASE WHEN event_type = 'sessionEnd' THEN 1 ELSE 0 END) > 0
+        THEN SUM(CASE WHEN event_type = 'sessionEnd' THEN COALESCE(duration_ms, 0) ELSE 0 END)
+        ELSE NULL
+      END AS duration_ms,
       SUM(CASE WHEN event_type = 'subagentStop' OR subagent_type IS NOT NULL THEN 1 ELSE 0 END) AS subagent_count
     FROM events
-    WHERE conversation_id IS NOT NULL
+    WHERE NULLIF(conversation_id, '') IS NOT NULL
     GROUP BY conversation_id`
   );
 
@@ -74,7 +78,7 @@ export function rollupSessions(db) {
       r.project,
       r.started_at,
       r.ended_at,
-      r.duration_ms || null,
+      r.duration_ms,
       modelRow?.model || null,
       r.composer_mode,
       r.total_input_tokens || 0,
@@ -109,7 +113,7 @@ export function rollupTimeBuckets(db) {
       SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(input_tokens,0) ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(output_tokens,0) ELSE 0 END),
-      COUNT(DISTINCT conversation_id)
+      COUNT(DISTINCT NULLIF(conversation_id, ''))
     FROM events
     WHERE ts IS NOT NULL
     GROUP BY hour_key, COALESCE(project,''), COALESCE(model,'')
@@ -125,7 +129,7 @@ export function rollupTimeBuckets(db) {
       SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(input_tokens,0) ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(output_tokens,0) ELSE 0 END),
-      COUNT(DISTINCT conversation_id),
+      COUNT(DISTINCT NULLIF(conversation_id, '')),
       0
     FROM events
     WHERE ts IS NOT NULL
@@ -173,7 +177,15 @@ export function rollupBehavior(db) {
   db.exec(`DELETE FROM behavior_snapshots WHERE period = 'daily'`);
 
   const prompts = queryAll(db, `SELECT preview FROM prompts ORDER BY id`);
-  const sessions = queryScalar(db, `SELECT COUNT(*) AS c FROM sessions`)?.c || 0;
+  // Match daily snapshots: distinct stop conversations (not tool-only sessions rows).
+  const sessions =
+    queryScalar(
+      db,
+      `SELECT COUNT(DISTINCT conversation_id) AS c
+       FROM events
+       WHERE event_type = 'stop'
+         AND NULLIF(conversation_id, '') IS NOT NULL`
+    )?.c || 0;
   const toolCount = aggregateToolCount(db);
   const overall = scoreBehaviorFromPrompts(
     prompts.map((p) => p.preview),
@@ -226,7 +238,7 @@ export function rollupBehavior(db) {
         `SELECT COUNT(DISTINCT conversation_id) AS c
          FROM events
          WHERE event_type = 'stop'
-           AND conversation_id IS NOT NULL
+           AND NULLIF(conversation_id, '') IS NOT NULL
            AND substr(COALESCE(ts, ''), 1, 10) = ?`,
         day
       )?.c || 0;
