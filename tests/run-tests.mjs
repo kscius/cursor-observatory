@@ -81,6 +81,48 @@ const innerEventAudit = {
 };
 assert.equal(unwrapAuditEntry(innerEventAudit).eventType, "stop");
 
+// Audit status falls back to final_status / reason when status is absent
+{
+  const withFinal = unwrapAuditEntry({
+    timestamp: "2026-06-18T00:34:02.971Z",
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "stop",
+        conversation_id: "conv-final-status",
+        final_status: "completed",
+      }),
+    },
+  });
+  assert.equal(withFinal.status, "completed");
+  assert.equal(withFinal.finalStatus, "completed");
+
+  const withReason = unwrapAuditEntry({
+    timestamp: "2026-06-18T00:34:02.971Z",
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "sessionEnd",
+        conversation_id: "conv-reason-status",
+        reason: "user_close",
+      }),
+    },
+  });
+  assert.equal(withReason.status, "user_close");
+
+  const statusWins = unwrapAuditEntry({
+    timestamp: "2026-06-18T00:34:02.971Z",
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "stop",
+        conversation_id: "conv-status-wins",
+        status: "ok",
+        final_status: "completed",
+        reason: "ignored",
+      }),
+    },
+  });
+  assert.equal(statusWins.status, "ok");
+}
+
 const emptyBehavior = scoreBehaviorFromPrompts([]);
 assert.equal(emptyBehavior.archetype, "Sprinter");
 assert.equal(emptyBehavior.fluencyScore, 50);
@@ -968,6 +1010,32 @@ assert.equal(
   rotDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-rotated-old").n,
   1
 );
+// Same/larger .old replacement must re-read from scratch (not resume checkpoint)
+const rotLine2 = JSON.stringify({
+  timestamp: "2026-06-21T14:00:00.000Z",
+  data: {
+    raw: JSON.stringify({
+      conversation_id: "conv-rotated-replaced",
+      hook_event_name: "stop",
+      model: "rot-model-2",
+      input_tokens: 9,
+      output_tokens: 2,
+    }),
+  },
+});
+// Pad so the replacement is larger than the previous .old file (size-shrink path would not fire).
+fs.writeFileSync(rotOldPath, rotLine2 + "\n" + " ".repeat(64) + "\n");
+const rotReplace = ingestAuditLogs(rotDb, rotHooksDir, true);
+assert.equal(rotReplace.files, 1);
+assert.equal(rotReplace.inserted, 1);
+assert.equal(
+  rotDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-rotated-old").n,
+  0
+);
+assert.equal(
+  rotDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-rotated-replaced").n,
+  1
+);
 rotDb.close();
 
 // Daily chart: one conversation with two models counts as one session
@@ -1393,7 +1461,7 @@ const stopWatch = startWatch(
   }
 );
 await new Promise((r) => setTimeout(r, 150));
-stopWatch();
+await stopWatch();
 assert.ok(refreshes >= 1);
 assert.equal(maxActive, 1);
 const watchReportFiles = fs.readdirSync(path.join(tmp, "watch-reports"));
@@ -1401,6 +1469,52 @@ assert.ok(watchReportFiles.includes("latest.html"));
 assert.ok(watchReportFiles.includes("latest.json"));
 assert.equal(watchReportFiles.filter((f) => f.startsWith("report-")).length, 0);
 watchDb.close();
+
+// Watch stop waits for an in-flight refresh before returning
+{
+  const stopWaitDb = openDatabase(path.join(tmp, "watch-stop-wait.db"));
+  const stopWaitHooks = path.join(tmp, "watch-stop-wait-hooks");
+  fs.mkdirSync(stopWaitHooks, { recursive: true });
+  let refreshStarted = false;
+  let refreshFinished = false;
+  let sawFinishBeforeStopResolved = false;
+  const stopWait = startWatch(
+    {
+      hooksLogsDir: stopWaitHooks,
+      projectsDir: path.join(tmp, "watch-stop-wait-projects"),
+      dataDir: path.join(tmp, "watch-stop-wait-data"),
+      reportsDir: path.join(tmp, "watch-stop-wait-reports"),
+      ingest: {
+        auditLogs: false,
+        sessionSummary: false,
+        subagentAudit: false,
+        toolFailures: false,
+        transcripts: false,
+        hookEvents: false,
+        includeRotatedLogs: false,
+      },
+      recommendations: { enabled: false, llm: { enabled: false } },
+    },
+    stopWaitDb,
+    {
+      intervalMs: 60_000,
+      onRefresh: async () => {
+        refreshStarted = true;
+        await new Promise((r) => setTimeout(r, 120));
+        refreshFinished = true;
+      },
+    }
+  );
+  // Stop while the initial refresh is still inside onRefresh.
+  while (!refreshStarted) await new Promise((r) => setTimeout(r, 5));
+  const stopDone = stopWait().then(() => {
+    sawFinishBeforeStopResolved = refreshFinished;
+  });
+  await stopDone;
+  assert.equal(refreshFinished, true);
+  assert.equal(sawFinishBeforeStopResolved, true);
+  stopWaitDb.close();
+}
 
 // Trailing incomplete JSONL line must not advance checkpoint until completed
 const partialHooksDir = path.join(tmp, "hooks-partial", "logs");
@@ -1563,31 +1677,88 @@ corruptDb.close();
 // topTools must not count toolFailure rows as uses
 {
   const toolsDb = openDatabase(path.join(tmp, "top-tools.db"));
-  toolsDb
-    .prepare(
-      `INSERT INTO events (ts, event_type, conversation_id, tool_name, source_file, source_line)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .run("2026-06-20T10:00:00.000Z", "preToolUse", "conv-tools", "Shell", "t.jsonl", 1);
-  toolsDb
-    .prepare(
-      `INSERT INTO events (ts, event_type, conversation_id, tool_name, source_file, source_line)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .run("2026-06-20T10:01:00.000Z", "toolFailure", "conv-tools", "Shell", "t.jsonl", 2);
-  toolsDb
-    .prepare(
-      `INSERT INTO events (ts, event_type, conversation_id, tool_name, source_file, source_line)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .run("2026-06-20T10:02:00.000Z", "toolFailure", "conv-tools", "Read", "t.jsonl", 3);
+  const insertToolEvt = toolsDb.prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, tool_name, prompt_preview, source_file, source_line)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  insertToolEvt.run("2026-06-20T10:00:00.000Z", "preToolUse", "conv-tools", "Shell", null, "t.jsonl", 1);
+  // Lexicographically larger older error must not win over the latest failure.
+  insertToolEvt.run(
+    "2026-06-20T10:01:00.000Z",
+    "toolFailure",
+    "conv-tools",
+    "Shell",
+    "zzz earlier alphabetically larger",
+    "t.jsonl",
+    2
+  );
+  insertToolEvt.run(
+    "2026-06-20T10:02:00.000Z",
+    "toolFailure",
+    "conv-tools",
+    "Shell",
+    "aaa latest error",
+    "t.jsonl",
+    3
+  );
+  insertToolEvt.run(
+    "2026-06-20T10:03:00.000Z",
+    "toolFailure",
+    "conv-tools",
+    "Read",
+    "read failed",
+    "t.jsonl",
+    4
+  );
   const toolsReport = buildJsonReport(toolsDb);
   assert.deepEqual(
     toolsReport.topTools.map((r) => ({ tool_name: r.tool_name, uses: r.uses })),
     [{ tool_name: "Shell", uses: 1 }]
   );
   assert.equal(toolsReport.toolFailures.length, 2);
+  const shellFail = toolsReport.toolFailures.find((r) => r.tool_name === "Shell");
+  assert.equal(shellFail.failures, 2);
+  assert.equal(shellFail.last_error, "aaa latest error");
   toolsDb.close();
+}
+
+// Session timeline: null timestamps last; equal timestamps ordered by id
+{
+  const tlDb = openDatabase(path.join(tmp, "timeline-order.db"));
+  const insertTl = tlDb.prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, tool_name, source_file, source_line)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  );
+  insertTl.run(null, "preToolUse", "conv-tl", "NullTool", "tl.jsonl", 1);
+  insertTl.run("2026-06-20T10:00:00.000Z", "preToolUse", "conv-tl", "A", "tl.jsonl", 2);
+  insertTl.run("2026-06-20T10:00:00.000Z", "preToolUse", "conv-tl", "B", "tl.jsonl", 3);
+  const tlMap = buildSessionEventMap(tlDb, [{ conversation_id: "conv-tl" }]);
+  assert.deepEqual(
+    tlMap["conv-tl"].map((e) => e.tool),
+    ["A", "B", "NullTool"]
+  );
+  tlDb.close();
+}
+
+// Report HTML includes clipboard fallback for file:// contexts
+{
+  const clipHtml = buildHtmlReport({
+    generatedAt: "2026-06-20T12:00:00.000Z",
+    totals: { sessions: 0, events: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 },
+    behavior: {},
+    daily: [],
+    hourlyToday: [],
+    topProjects: [],
+    topModels: [],
+    topTools: [],
+    toolFailures: [],
+    toolUsage: [],
+    recentSessions: [],
+    sessionEvents: {},
+  });
+  assert.match(clipHtml, /async function copyText/);
+  assert.match(clipHtml, /document\.execCommand\('copy'\)/);
+  assert.match(clipHtml, /navigator\.clipboard\?\.writeText/);
 }
 
 // Live fluency/archetype surface when no behavior_snapshots row exists yet

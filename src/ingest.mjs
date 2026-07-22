@@ -39,13 +39,15 @@ function* readLinesFrom(filePath, startLine = 0) {
   }
 }
 
-function ingestJsonlFile(db, filePath, mapFn) {
+function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
   if (!fs.existsSync(filePath)) return { lines: 0, inserted: 0, skipped: 0 };
 
   const stat = fs.statSync(filePath);
   const cp = getCheckpoint(db, filePath);
   let startLine = cp.last_line;
-  if (stat.size < cp.last_size) {
+  // Rotated snapshots (*.old) are wholesale replacements, not append-only logs.
+  // Same/larger size must still reset — size-shrink detection alone misses replacements.
+  if (replaceOnRead || stat.size < cp.last_size) {
     // Log rotation or truncate: line numbers collide with the previous file.
     db.prepare(`DELETE FROM events WHERE source_file = ?`).run(filePath);
     startLine = 0;
@@ -160,7 +162,8 @@ export function ingestAuditLogs(db, hooksLogsDir, includeRotated = true) {
   for (const f of files) {
     if (!fs.existsSync(f)) continue;
     totals.files++;
-    const r = ingestJsonlFile(db, f, auditToEvent);
+    const replaceOnRead = path.basename(f) === "agent-audit.jsonl.old";
+    const r = ingestJsonlFile(db, f, auditToEvent, { replaceOnRead });
     totals.inserted += r.inserted;
     totals.skipped += r.skipped;
   }
