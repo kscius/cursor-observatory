@@ -30,7 +30,32 @@ function readCache(cacheDir) {
 
 function writeCache(cacheDir, data) {
   fs.mkdirSync(cacheDir, { recursive: true });
-  fs.writeFileSync(path.join(cacheDir, "llm-recommendations.json"), JSON.stringify(data, null, 2));
+  const targetPath = path.join(cacheDir, "llm-recommendations.json");
+  const tmpPath = `${targetPath}.${process.pid}.tmp`;
+  const contents = JSON.stringify(data, null, 2);
+  fs.writeFileSync(tmpPath, contents, "utf8");
+  try {
+    fs.renameSync(tmpPath, targetPath);
+  } catch (err) {
+    // Windows may refuse rename over an existing file; fall back to copy.
+    if (process.platform !== "win32" || !fs.existsSync(targetPath)) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* ignore */
+      }
+      throw err;
+    }
+    try {
+      fs.copyFileSync(tmpPath, targetPath);
+    } finally {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 async function callOpenAI(config, userPrompt) {

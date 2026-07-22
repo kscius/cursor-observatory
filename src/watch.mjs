@@ -74,7 +74,10 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm 
 
   watchDir(config.hooksLogsDir);
   watchDir(config.projectsDir);
-  watchDir(path.join(config.dataDir, "events"));
+  // Ensure collector event dir exists so the first hook write is watched immediately.
+  const eventsDir = path.join(config.dataDir, "events");
+  fs.mkdirSync(eventsDir, { recursive: true });
+  watchDir(eventsDir);
 
   refresh();
   const timer = setInterval(refresh, intervalMs);
