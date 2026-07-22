@@ -83,7 +83,7 @@ export async function runCli(argv) {
       db,
       `SELECT
         (SELECT COUNT(*) FROM events) AS events,
-        (SELECT COUNT(DISTINCT conversation_id) FROM events WHERE conversation_id IS NOT NULL) AS sessions,
+        (SELECT COUNT(DISTINCT NULLIF(conversation_id, '')) FROM events) AS sessions,
         (SELECT COUNT(*) FROM prompts) AS prompts,
         (SELECT COUNT(*) FROM transcripts) AS transcripts,
         (SELECT SUM(CASE WHEN event_type='toolFailure' THEN 1 ELSE 0 END) FROM events) AS tool_failures,
