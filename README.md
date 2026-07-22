@@ -35,7 +35,7 @@ This will:
 
 1. Ingest hook logs + agent transcripts from `~/.cursor`
 2. Apply retention (if configured), then aggregate into SQLite at `~/.cursor/observatory/observatory.db`
-3. Generate `~/.cursor/observatory/reports/latest.html` (and `latest.json`) and open the HTML report
+3. Generate stamped `report-*.html/json` plus atomic `latest.html`/`latest.json` under `~/.cursor/observatory/reports/` and open the HTML report
 
 On a fresh machine with no Cursor telemetry yet, the first dashboard is empty — that is expected. Run `status` or check `~/.cursor/hooks/logs/` if you expected data.
 
@@ -52,6 +52,7 @@ node bin/cursor-observatory.mjs report --with-llm # report + OpenAI coaching (ne
 node bin/cursor-observatory.mjs dashboard       # ingest → retention → rollup → report → open browser
 node bin/cursor-observatory.mjs dashboard --full     # full rescan + refresh
 node bin/cursor-observatory.mjs dashboard --no-open  # headless / CI (skip browser)
+# same as: npm run dashboard:headless
 node bin/cursor-observatory.mjs dashboard --with-llm
 node bin/cursor-observatory.mjs watch           # auto-refresh on file changes (30s interval, 2s debounce)
 node bin/cursor-observatory.mjs watch --interval 60  # interval in seconds (must be > 0)

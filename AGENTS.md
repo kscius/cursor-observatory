@@ -19,9 +19,9 @@ Non-obvious caveats:
 
 - **No lint step and no runtime dependencies.** `npm install` is effectively a no-op
   (no packages to install; `package-lock.json` is gitignored).
-- **`npm test` passes on Linux/macOS and Windows.** Path helpers use `path.sep`, so
-  cross-platform assertions in `tests/run-tests.mjs` stay green in CI (see
-  `.github/workflows/test.yml`).
+- **`npm test` is cross-platform** (path helpers use `path.sep`). CI runs on
+  Ubuntu and Windows (`.github/workflows/test.yml`); macOS is not in the matrix
+  but local runs there should also pass.
 - **A fresh VM has no real telemetry.** `~/.cursor/hooks/logs/` is usually empty, so
   `ingest` reports 0 events and the dashboard renders empty. To exercise the full
   pipeline, seed sample events into `~/.cursor/hooks/logs/agent-audit.jsonl` (one JSON
@@ -31,8 +31,9 @@ Non-obvious caveats:
   otherwise the CLI tries to launch a browser via `xdg-open`. The `report` command
   never opens a browser.
 - Output is written outside the repo, under `~/.cursor/observatory/`
-  (DB at `observatory.db` in WAL mode, reports under `reports/latest.html` via
-  atomic replace).
+  (DB at `observatory.db` in WAL mode). `report`/`dashboard` write stamped
+  `report-*.html/json` plus atomic `latest.html`/`latest.json`; `watch` updates
+  only the latest files.
 - **Collector ingest is opt-in.** `loadConfig()` enables `ingest.hookEvents` only
   when set to `true` (omitted/`false` stays off). `config.example.json` also sets
   it to `false` so default audit-log ingest does not double-count. Enable only when
