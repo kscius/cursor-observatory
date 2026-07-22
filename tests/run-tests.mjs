@@ -261,6 +261,15 @@ const mergedFilteredActions = mergeLlmRecommendations(recs, {
   behavior: { summary: "ok", actions: ["keep", "", 3, null, "  also"] },
 });
 assert.deepEqual(mergedFilteredActions.sections.behavior.llmActions, ["keep", "  also"]);
+// Empty / failed LLM sections must not flip source to hybrid
+const mergedEmpty = mergeLlmRecommendations(recs, {});
+assert.equal(mergedEmpty.source, "deterministic");
+const mergedFailed = mergeLlmRecommendations(recs, {
+  behavior: { summary: null, actions: [], error: "boom" },
+  overview: { summary: 12, actions: "nope" },
+});
+assert.equal(mergedFailed.source, "deterministic");
+assert.equal(mergedFailed.sections.behavior.llmSummary, null);
 assert.doesNotThrow(() =>
   buildHtmlReport({
     generatedAt: "2026-07-19T00:00:00.000Z",
@@ -411,6 +420,72 @@ const modelNoiseRow = rollupDb
   .prepare("SELECT model_primary FROM sessions WHERE conversation_id = ?")
   .get(modelNoiseConv);
 assert.equal(modelNoiseRow.model_primary, "composer-2.5");
+
+// duration_ms = 0 must be preserved (not coerced to null via ||)
+const zeroDurConv = "conv-zero-duration";
+insertEvent.run(
+  "2026-06-20T12:00:00.000Z",
+  "stop",
+  zeroDurConv,
+  "model-a",
+  1,
+  1,
+  null,
+  "r-zero.jsonl",
+  1
+);
+insertEvent.run(
+  "2026-06-20T12:01:00.000Z",
+  "sessionEnd",
+  zeroDurConv,
+  null,
+  null,
+  null,
+  0,
+  "r-zero.jsonl",
+  2
+);
+rollupSessions(rollupDb);
+assert.equal(
+  rollupDb.prepare("SELECT duration_ms FROM sessions WHERE conversation_id = ?").get(zeroDurConv)
+    .duration_ms,
+  0
+);
+
+// Empty conversation_id must not create a sessions row
+rollupDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+     VALUES (?, 'stop', ?, ?, ?)`
+  )
+  .run("2026-06-20T13:00:00.000Z", "", "empty-id.jsonl", 1);
+rollupSessions(rollupDb);
+assert.equal(
+  rollupDb.prepare("SELECT COUNT(*) AS n FROM sessions WHERE conversation_id = ''").get().n,
+  0
+);
+
+// All-time behavior session_count counts distinct stop conversations only
+rollupDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+     VALUES (?, 'preToolUse', ?, ?, ?)`
+  )
+  .run("2026-06-20T14:00:00.000Z", "tool-only-conv", "tool-only.jsonl", 1);
+runAllRollups(rollupDb);
+const allTimeSessions = rollupDb
+  .prepare(
+    `SELECT session_count FROM behavior_snapshots WHERE period = 'all-time' AND period_key = 'all'`
+  )
+  .get().session_count;
+const stopSessions = rollupDb
+  .prepare(
+    `SELECT COUNT(DISTINCT conversation_id) AS n FROM events
+     WHERE event_type = 'stop' AND NULLIF(conversation_id, '') IS NOT NULL`
+  )
+  .get().n;
+assert.equal(allTimeSessions, stopSessions);
+assert.ok(allTimeSessions >= 2); // at least rollupConv + modelNoiseConv (+ zeroDur)
 rollupDb.close();
 
 // Retention: prune events older than N days
@@ -442,6 +517,25 @@ assert.equal(
   retentionDb.prepare("SELECT COUNT(*) AS n FROM events").get().n,
   1
 );
+// Null-timestamp rows must also prune when retention is enabled
+retentionDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, source_file, source_line)
+     VALUES (NULL, 'stop', ?, ?, ?)`
+  )
+  .run("null-ts", "null-ts.jsonl", 1);
+retentionDb
+  .prepare(
+    `INSERT INTO prompts (conversation_id, prompt_idx, ts, preview, source)
+     VALUES (?, ?, NULL, ?, ?)`
+  )
+  .run("null-ts", 0, "orphan", "transcript");
+const nullTsPruned = applyRetention(retentionDb, { retention: { keepRawEventsDays: 30 } });
+assert.equal(nullTsPruned.prunedEvents, 1);
+assert.equal(nullTsPruned.prunedPrompts, 1);
+assert.equal(retentionDb.prepare("SELECT COUNT(*) AS n FROM events WHERE ts IS NULL").get().n, 0);
+assert.equal(retentionDb.prepare("SELECT COUNT(*) AS n FROM prompts WHERE ts IS NULL").get().n, 0);
+retentionDb.close();
 
 // Same cutoff-day ISO timestamps must prune (ISO vs SQLite datetime string trap)
 const retentionEdgeDb = openDatabase(path.join(tmp, "retention-edge.db"));
@@ -1424,6 +1518,31 @@ const collectorReject = spawnSync(process.execPath, [collectorScript], {
 assert.equal(collectorReject.status, 0);
 assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 1);
 
+// Collector: reason → status, epoch ms → ISO, reject non-string event names
+const collectorReason = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({
+    hook_event_name: "sessionEnd",
+    session_id: "conv-reason",
+    timestamp: 1718895600000,
+    reason: "completed",
+  }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorReason.status, 0);
+const collectorReasonEntry = JSON.parse(
+  fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
+);
+assert.equal(collectorReasonEntry.status, "completed");
+assert.equal(collectorReasonEntry.ts, "2024-06-20T15:00:00.000Z");
+const collectorBadEvent = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({ event: { name: "stop" }, session_id: "nope" }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorBadEvent.status, 0);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 2);
+
 // Watch smoke: refresh once, stop cleanly, no overlapping onRefresh
 const watchDb = openDatabase(path.join(tmp, "watch.db"));
 const watchHooks = path.join(tmp, "watch-hooks");
@@ -1672,6 +1791,20 @@ corruptDb.close();
   const scored = JSON.parse(py.stdout);
   assert.equal(scored.real_prompt_count, 2);
   assert.ok(typeof scored.fluency_score === "number");
+
+  const missing = spawnSync("python3", [behaviorPy, path.join(tmp, "missing-prompts.json")], {
+    encoding: "utf8",
+  });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /error: cannot read/i);
+  assert.ok(!missing.stderr.includes("Traceback"));
+
+  const badJsonPath = path.join(tmp, "bad-prompts.json");
+  fs.writeFileSync(badJsonPath, "{not-json");
+  const badJson = spawnSync("python3", [behaviorPy, badJsonPath], { encoding: "utf8" });
+  assert.notEqual(badJson.status, 0);
+  assert.match(badJson.stderr, /error: invalid JSON/i);
+  assert.ok(!badJson.stderr.includes("Traceback"));
 }
 
 // topTools must not count toolFailure rows as uses
@@ -1880,8 +2013,6 @@ assert.throws(() => parseIntervalMs(["--interval"]), /requires a positive number
 assert.throws(() => parseIntervalMs(["--interval", "0"]), /Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "-5"]), /requires a positive number|Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "abc"]), /Invalid --interval/);
-
-retentionDb.close();
 
 db.close();
 try {

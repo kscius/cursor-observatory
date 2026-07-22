@@ -53,7 +53,15 @@ def main() -> int:
     if len(sys.argv) < 2:
         print("Usage: behavior.py <prompts.json>", file=sys.stderr)
         return 1
-    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    path = Path(sys.argv[1])
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as err:
+        print(f"error: cannot read {path}: {err}", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as err:
+        print(f"error: invalid JSON in {path}: {err}", file=sys.stderr)
+        return 1
     prompts = data if isinstance(data, list) else data.get("prompts", [])
     result = score_prompts(prompts if isinstance(prompts, list) else [])
     print(json.dumps(result, indent=2))

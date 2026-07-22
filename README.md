@@ -18,7 +18,7 @@ Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (beha
 ## Requirements
 
 - **Node.js 22+** (uses built-in `node:sqlite`)
-- **Python 3.8+** (optional — standalone `analyzer/behavior.py` for ad-hoc prompt scoring)
+- **Python 3.8+** (optional — standalone heuristic demo: `python3 analyzer/behavior.py prompts.json`; live dashboard scoring uses `src/behavior.mjs`)
 - Cursor with hooks logging to `~/.cursor/hooks/logs/` (KS Cursor Orchestrator setup already does this)
 
 ## Quick start
@@ -121,7 +121,7 @@ Example `hooks.json` entry (adjust the script path):
 
 Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl` (or `$OBSERVATORY_DATA_DIR/events` / `dataDir` from config).
 
-Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/observatory/config.json` (omitting the key keeps it off; `config.example.json` also sets `false` so audit-only setups do not double-count). If you use the collector, set `"ingest": { "auditLogs": false }` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`. Note: the hook collector itself only reads `~/.cursor/observatory/config.json` (or `OBSERVATORY_DATA_DIR`), not a repo-local `config.json`.
+Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/observatory/config.json` (omitting the key keeps it off; `config.example.json` also sets `false` so audit-only setups do not double-count). If you use the collector, set `"ingest": { "auditLogs": false }` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`. If the collector also handles `sessionEnd`, set `"ingest": { "sessionSummary": false }` so `session-summary.jsonl` does not double-count the same ends. Note: the hook collector itself only reads `~/.cursor/observatory/config.json` (or `OBSERVATORY_DATA_DIR`), not a repo-local `config.json`.
 
 ## Configuration
 

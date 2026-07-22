@@ -8,13 +8,14 @@ export function applyRetention(db, config) {
   // which sorts incorrectly against stored 'YYYY-MM-DDTHH:MM:SS.sssZ' values.
   return withTransaction(db, () => {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    // Also drop null-timestamp rows: they never age out via ts < cutoff otherwise.
     const prunedEvents =
       db
-        .prepare(`DELETE FROM events WHERE ts IS NOT NULL AND ts < ?`)
+        .prepare(`DELETE FROM events WHERE ts IS NULL OR ts < ?`)
         .run(cutoff).changes ?? 0;
     const prunedPrompts =
       db
-        .prepare(`DELETE FROM prompts WHERE ts IS NOT NULL AND ts < ?`)
+        .prepare(`DELETE FROM prompts WHERE ts IS NULL OR ts < ?`)
         .run(cutoff).changes ?? 0;
 
     return { pruned: prunedEvents + prunedPrompts, prunedEvents, prunedPrompts, days };

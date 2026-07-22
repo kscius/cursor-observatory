@@ -139,11 +139,6 @@ CREATE INDEX IF NOT EXISTS idx_events_conv_type ON events(conversation_id, event
 CREATE INDEX IF NOT EXISTS idx_events_type_tool ON events(event_type, tool_name);
 `;
 
-export function getTranscriptMtime(db, filePath) {
-  const row = queryScalar(db, `SELECT mtime_ms FROM transcripts WHERE path = ?`, filePath);
-  return row?.mtime_ms ?? null;
-}
-
 /** Returns stored mtime + size so ingest can detect same-mtime rewrites. */
 export function getTranscriptMetadata(db, filePath) {
   return (

@@ -225,14 +225,19 @@ function normalizeLlmActions(actions) {
 
 export function mergeLlmRecommendations(det, llmSections) {
   if (!llmSections) return det;
-  const out = { ...det, source: "hybrid", sections: { ...det.sections } };
+  const out = { ...det, sections: { ...det.sections } };
+  let merged = false;
   for (const [key, llm] of Object.entries(llmSections)) {
     if (!out.sections[key] || !llm) continue;
+    const llmSummary = typeof llm.summary === "string" ? llm.summary : null;
+    const llmActions = normalizeLlmActions(llm.actions);
     out.sections[key] = {
       ...out.sections[key],
-      llmSummary: typeof llm.summary === "string" ? llm.summary : null,
-      llmActions: normalizeLlmActions(llm.actions),
+      llmSummary,
+      llmActions,
     };
+    if (llmSummary || llmActions.length > 0) merged = true;
   }
+  if (merged) out.source = "hybrid";
   return out;
 }
