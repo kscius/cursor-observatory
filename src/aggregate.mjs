@@ -136,18 +136,31 @@ export function rollupTimeBuckets(db) {
     GROUP BY day_key, COALESCE(project,''), COALESCE(model,'')
   `);
 
+  // Attribute each prompt to one model bucket: the conversation's primary stop
+  // model that day/project (most frequent, then name). Matching ANY event model
+  // double-counts prompts when one conversation spans multiple models.
   db.exec(`
     UPDATE daily_stats SET prompt_count = (
       SELECT COUNT(*) FROM prompts p
       WHERE substr(COALESCE(p.ts, ''), 1, 10) = daily_stats.day_key
         AND COALESCE(p.project, '') = daily_stats.project
         AND EXISTS (
-          SELECT 1 FROM events e
+          SELECT 1 FROM events e0
+          WHERE e0.conversation_id = p.conversation_id
+            AND substr(COALESCE(e0.ts, ''), 1, 10) = daily_stats.day_key
+            AND COALESCE(e0.project, '') = daily_stats.project
+        )
+        AND COALESCE((
+          SELECT e.model FROM events e
           WHERE e.conversation_id = p.conversation_id
             AND substr(COALESCE(e.ts, ''), 1, 10) = daily_stats.day_key
             AND COALESCE(e.project, '') = daily_stats.project
-            AND COALESCE(e.model, '') = daily_stats.model
-        )
+            AND e.event_type = 'stop'
+            AND NULLIF(e.model, '') IS NOT NULL
+          GROUP BY e.model
+          ORDER BY COUNT(*) DESC, e.model ASC
+          LIMIT 1
+        ), '') = daily_stats.model
     )
   `);
 }
