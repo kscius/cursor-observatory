@@ -86,6 +86,16 @@ function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
   return { lines: maxLine - startLine, inserted, skipped };
 }
 
+/** Prefer ISO `timestamp`, then collector-style `ts`. */
+function eventTs(outer) {
+  return outer?.timestamp || outer?.ts || null;
+}
+
+/** Align with audit unwrap: status → final_status → reason. */
+function eventStatus(outer, fallback = null) {
+  return outer?.status || outer?.final_status || outer?.reason || fallback;
+}
+
 function auditToEvent(outer, sourceFile, sourceLine) {
   const ev = unwrapAuditEntry(outer);
   if (!ev) return null;
@@ -100,7 +110,7 @@ function auditToEvent(outer, sourceFile, sourceLine) {
 
 function subagentToEvent(outer, sourceFile, sourceLine) {
   return {
-    ts: outer.timestamp || null,
+    ts: eventTs(outer),
     eventType: outer.event || "subagentStop",
     conversationId: null,
     generationId: null,
@@ -119,7 +129,7 @@ function subagentToEvent(outer, sourceFile, sourceLine) {
     composerMode: null,
     promptPreview: String(outer.task || outer.description || "").slice(0, 300),
     subagentType: outer.subagent_type || null,
-    status: outer.status || null,
+    status: eventStatus(outer),
     sourceFile,
     sourceLine,
     payloadJson: JSON.stringify(outer).slice(0, 8000),
@@ -128,7 +138,7 @@ function subagentToEvent(outer, sourceFile, sourceLine) {
 
 function sessionSummaryToEvent(outer, sourceFile, sourceLine) {
   return {
-    ts: outer.timestamp || null,
+    ts: eventTs(outer),
     eventType: "sessionEnd",
     conversationId: outer.conversation_id || null,
     generationId: outer.generation_id || null,
@@ -147,7 +157,7 @@ function sessionSummaryToEvent(outer, sourceFile, sourceLine) {
     composerMode: outer.composer_mode || null,
     promptPreview: null,
     subagentType: null,
-    status: outer.final_status || outer.reason || null,
+    status: eventStatus(outer),
     sourceFile,
     sourceLine,
     payloadJson: JSON.stringify(outer).slice(0, 4000),
@@ -183,7 +193,7 @@ export function ingestSubagentAudit(db, hooksLogsDir) {
 export function ingestToolFailures(db, hooksLogsDir) {
   const f = path.join(hooksLogsDir, "tool-failures.jsonl");
   return ingestJsonlFile(db, f, (outer, sourceFile, sourceLine) => ({
-    ts: outer.timestamp || null,
+    ts: eventTs(outer),
     eventType: "toolFailure",
     conversationId: outer.conversation_id || null,
     generationId: outer.generation_id || null,
@@ -202,7 +212,7 @@ export function ingestToolFailures(db, hooksLogsDir) {
     composerMode: null,
     promptPreview: String(outer.error || outer.message || "").slice(0, 300),
     subagentType: null,
-    status: outer.status || "failed",
+    status: eventStatus(outer, "failed"),
     sourceFile,
     sourceLine,
     payloadJson: JSON.stringify(outer).slice(0, 4000),
@@ -309,7 +319,7 @@ export function ingestHookEvents(db, dataDir) {
     const roots = Array.isArray(outer.workspace_roots) ? outer.workspace_roots : [];
     const prompt = outer.prompt || outer.user_message || null;
     const ev = {
-      ts: outer.ts || outer.timestamp || null,
+      ts: eventTs(outer),
       eventType: outer.hook_event_name || outer.event || "unknown",
       conversationId: outer.conversation_id || outer.session_id || null,
       generationId: outer.generation_id || null,
@@ -332,7 +342,7 @@ export function ingestHookEvents(db, dataDir) {
       ...ev,
       promptPreview: ev.prompt ? String(ev.prompt).slice(0, 300) : null,
       subagentType: outer.subagent_type || null,
-      status: outer.status || outer.final_status || null,
+      status: eventStatus(outer),
       sourceFile,
       sourceLine,
       payloadJson: JSON.stringify(outer).slice(0, 8000),

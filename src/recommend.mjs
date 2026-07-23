@@ -9,7 +9,10 @@ function pct(n, d) {
 }
 
 function topEntry(list, key = "input_tokens") {
-  return list?.[0] || null;
+  if (!list?.length) return null;
+  return list.reduce((best, item) =>
+    (Number(item?.[key]) || 0) > (Number(best?.[key]) || 0) ? item : best
+  );
 }
 
 export function buildDeterministicRecommendations(report) {

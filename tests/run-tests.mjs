@@ -956,6 +956,74 @@ assert.equal(secondaryEvents[2].event_type, "toolFailure");
 assert.equal(secondaryEvents[2].conversation_id, "conv-tool-fail");
 assert.equal(secondaryEvents[2].tool_name, "Shell");
 secondaryDb.close();
+
+// Secondary logs: collector-style `ts` and status aliases (status/final_status/reason)
+const aliasHooksDir = path.join(tmp, "alias-hooks", "logs");
+fs.mkdirSync(aliasHooksDir, { recursive: true });
+fs.writeFileSync(
+  path.join(aliasHooksDir, "session-summary.jsonl"),
+  JSON.stringify({
+    ts: "2026-06-21T12:00:00.000Z",
+    conversation_id: "conv-session-ts",
+    status: "ok",
+    final_status: "ignored",
+    duration_ms: 1000,
+  }) + "\n"
+);
+fs.writeFileSync(
+  path.join(aliasHooksDir, "subagent-audit.jsonl"),
+  JSON.stringify({
+    ts: "2026-06-21T12:05:00.000Z",
+    event: "subagentStop",
+    subagent_type: "explore",
+    task: "alias status",
+    reason: "completed",
+  }) + "\n"
+);
+fs.writeFileSync(
+  path.join(aliasHooksDir, "tool-failures.jsonl"),
+  JSON.stringify({
+    ts: "2026-06-21T12:10:00.000Z",
+    conversation_id: "conv-tool-reason",
+    tool_name: "Shell",
+    error: "boom",
+    final_status: "error",
+  }) + "\n"
+);
+const aliasDbPath = path.join(tmp, "alias-ingest.db");
+const aliasDb = openDatabase(aliasDbPath);
+const aliasSummary = ingestAll(aliasDb, {
+  cursorHome: path.join(tmp, "alias-hooks"),
+  dataDir: path.join(tmp, "observatory"),
+  hooksLogsDir: aliasHooksDir,
+  projectsDir: path.join(tmp, "projects"),
+  ingest: {
+    auditLogs: false,
+    sessionSummary: true,
+    subagentAudit: true,
+    toolFailures: true,
+    transcripts: false,
+    hookEvents: false,
+    includeRotatedLogs: false,
+  },
+});
+assert.equal(aliasSummary.session.inserted, 1);
+assert.equal(aliasSummary.subagent.inserted, 1);
+assert.equal(aliasSummary.tools.inserted, 1);
+const aliasEvents = aliasDb
+  .prepare("SELECT event_type, conversation_id, ts, status FROM events ORDER BY id")
+  .all();
+assert.equal(aliasEvents[0].event_type, "sessionEnd");
+assert.equal(aliasEvents[0].ts, "2026-06-21T12:00:00.000Z");
+assert.equal(aliasEvents[0].status, "ok");
+assert.equal(aliasEvents[1].event_type, "subagentStop");
+assert.equal(aliasEvents[1].ts, "2026-06-21T12:05:00.000Z");
+assert.equal(aliasEvents[1].status, "completed");
+assert.equal(aliasEvents[2].event_type, "toolFailure");
+assert.equal(aliasEvents[2].ts, "2026-06-21T12:10:00.000Z");
+assert.equal(aliasEvents[2].status, "error");
+aliasDb.close();
+
 // Hook events ingest: collector stream at dataDir/events/hook-events.jsonl
 const hookEventsDir = path.join(tmp, "observatory", "events");
 fs.mkdirSync(hookEventsDir, { recursive: true });
@@ -1017,6 +1085,22 @@ const hookAliasRow = hookDb
 assert.equal(hookAliasRow.event_type, "sessionEnd");
 assert.equal(hookAliasRow.input_tokens, 42);
 assert.equal(hookAliasRow.status, "completed");
+
+// Hook events: reason-only status fallback
+const hookReasonLine = JSON.stringify({
+  ts: "2026-06-20T15:00:00.000Z",
+  hook_event_name: "sessionEnd",
+  conversation_id: "conv-hook-reason",
+  reason: "user_close",
+});
+fs.appendFileSync(path.join(hookEventsDir, "hook-events.jsonl"), hookReasonLine + "\n");
+const hookReasonSummary = ingestAll(hookDb, hookConfig);
+assert.equal(hookReasonSummary.hookEvents.inserted, 1);
+assert.equal(
+  hookDb.prepare("SELECT status FROM events WHERE conversation_id = ?").get("conv-hook-reason")
+    .status,
+  "user_close"
+);
 
 const hookDisabledDbPath = path.join(tmp, "hook-disabled.db");
 const hookDisabledDb = openDatabase(hookDisabledDbPath);
@@ -1209,6 +1293,47 @@ assert.equal(promptCountRows[0].prompt_count, 1);
 assert.equal(promptCountRows[1].model, "model-b");
 assert.equal(promptCountRows[1].prompt_count, 1);
 promptCountDb.close();
+
+// One conversation with two models must not double-count prompts across model rows
+const multiModelPromptDbPath = path.join(tmp, "daily-prompt-multi-model.db");
+const multiModelPromptDb = openDatabase(multiModelPromptDbPath);
+const multiModelDay = "2026-06-23";
+const insertMultiStop = multiModelPromptDb.prepare(
+  `INSERT INTO events (
+    ts, event_type, conversation_id, model, input_tokens, output_tokens,
+    source_file, source_line
+  ) VALUES (?, 'stop', ?, ?, 10, 1, 'multi.jsonl', ?)`
+);
+insertMultiStop.run(`${multiModelDay}T10:00:00.000Z`, "conv-multi", "model-a", 1);
+insertMultiStop.run(`${multiModelDay}T10:30:00.000Z`, "conv-multi", "model-a", 2);
+insertMultiStop.run(`${multiModelDay}T11:00:00.000Z`, "conv-multi", "model-b", 3);
+multiModelPromptDb
+  .prepare(
+    `INSERT INTO prompts (conversation_id, project, prompt_idx, ts, preview, source)
+     VALUES (?, '', ?, ?, ?, 'transcript')`
+  )
+  .run("conv-multi", 0, `${multiModelDay}T10:05:00.000Z`, "first prompt");
+multiModelPromptDb
+  .prepare(
+    `INSERT INTO prompts (conversation_id, project, prompt_idx, ts, preview, source)
+     VALUES (?, '', ?, ?, ?, 'transcript')`
+  )
+  .run("conv-multi", 1, `${multiModelDay}T10:35:00.000Z`, "second prompt");
+runAllRollups(multiModelPromptDb);
+const multiModelPromptRows = multiModelPromptDb
+  .prepare(`SELECT model, prompt_count FROM daily_stats WHERE day_key = ? ORDER BY model`)
+  .all(multiModelDay);
+assert.equal(multiModelPromptRows.length, 2);
+assert.equal(multiModelPromptRows[0].model, "model-a");
+assert.equal(multiModelPromptRows[0].prompt_count, 2);
+assert.equal(multiModelPromptRows[1].model, "model-b");
+assert.equal(multiModelPromptRows[1].prompt_count, 0);
+assert.equal(
+  multiModelPromptRows.reduce((n, r) => n + r.prompt_count, 0),
+  2,
+  "SUM(prompt_count) must equal actual prompts for the day"
+);
+multiModelPromptDb.close();
 
 // enrichWithLlm no-ops without API key (even when enabled)
 {
@@ -2068,6 +2193,32 @@ corruptDb.close();
   });
   const contextMetric = ctxRecs.sections.behavior.metrics.find((m) => m.label === "Context");
   assert.equal(contextMetric?.value, "80%");
+}
+
+// topEntry picks the max by metric key even when the list is unsorted
+{
+  const unsortedRecs = buildDeterministicRecommendations({
+    totals: { sessions: 2, events: 2, input_tokens: 100, output_tokens: 10, cache_read_tokens: 0 },
+    topProjects: [
+      { project: "/tmp/small", input_tokens: 10 },
+      { project: "/tmp/large", input_tokens: 90 },
+    ],
+    topModels: [
+      { model: "cheap", input_tokens: 5 },
+      { model: "heavy", input_tokens: 95 },
+    ],
+    topTools: [
+      { tool_name: "rarely", uses: 1 },
+      { tool_name: "often", uses: 9 },
+    ],
+    toolFailures: [],
+    behavior: {},
+  });
+  const topProjectMetric = unsortedRecs.sections.usage.metrics.find((m) => m.label === "Top project");
+  const topModelMetric = unsortedRecs.sections.usage.metrics.find((m) => m.label === "Top model");
+  assert.equal(topProjectMetric?.value, "large");
+  assert.equal(topModelMetric?.value, "heavy");
+  assert.match(unsortedRecs.sections.usage.insights.join("\n"), /large/);
 }
 
 // status session count matches report (distinct conversations in events, not sessions table)
