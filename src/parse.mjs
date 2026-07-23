@@ -60,7 +60,8 @@ export function unwrapAuditEntry(outer) {
     outer.hook_event_name ||
     "unknown";
 
-  const ts = outer.timestamp || inner.timestamp || null;
+  const ts = outer.timestamp || inner.timestamp || outer.ts || inner.ts || null;
+  const workspaceRoots = Array.isArray(inner.workspace_roots) ? inner.workspace_roots : [];
 
   return {
     ts,
@@ -81,8 +82,8 @@ export function unwrapAuditEntry(outer) {
     command: inner.command || null,
     output: typeof inner.output === "string" ? inner.output.slice(0, 2000) : null,
     durationMs: num(inner.duration_ms),
-    workspaceRoots: inner.workspace_roots || [],
-    project: primaryWorkspace(inner.workspace_roots) ||
+    workspaceRoots,
+    project: primaryWorkspace(workspaceRoots) ||
       projectFromTranscriptPath(inner.transcript_path),
     transcriptPath: inner.transcript_path || null,
     cursorVersion: inner.cursor_version || null,

@@ -110,7 +110,7 @@ export function buildJsonReport(db) {
   const totals = queryScalar(
     db,
     `SELECT
-      COUNT(DISTINCT conversation_id) AS sessions,
+      COUNT(DISTINCT NULLIF(conversation_id, '')) AS sessions,
       COUNT(*) AS events,
       SUM(CASE WHEN event_type='stop' THEN COALESCE(input_tokens,0) ELSE 0 END) AS input_tokens,
       SUM(CASE WHEN event_type='stop' THEN COALESCE(output_tokens,0) ELSE 0 END) AS output_tokens,
@@ -239,7 +239,7 @@ export function buildJsonReport(db) {
                 SELECT e2.prompt_preview
                 FROM events e2
                 WHERE e2.event_type = 'toolFailure'
-                  AND e2.tool_name = e.tool_name
+                  AND e2.tool_name IS e.tool_name
                 ORDER BY e2.ts IS NULL, e2.ts DESC, e2.id DESC
                 LIMIT 1
               ) AS last_error

@@ -123,6 +123,36 @@ assert.equal(unwrapAuditEntry(innerEventAudit).eventType, "stop");
   assert.equal(statusWins.status, "ok");
 }
 
+// Audit unwrap accepts collector-style `ts` and coerces non-array workspace_roots
+{
+  const withTs = unwrapAuditEntry({
+    ts: "2026-06-18T00:34:02.971Z",
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "stop",
+        conversation_id: "conv-ts-alias",
+        workspace_roots: "not-an-array",
+      }),
+    },
+  });
+  assert.equal(withTs.ts, "2026-06-18T00:34:02.971Z");
+  assert.deepEqual(withTs.workspaceRoots, []);
+  assert.equal(withTs.project, null);
+
+  const innerTs = unwrapAuditEntry({
+    data: {
+      raw: JSON.stringify({
+        ts: "2026-07-01T12:00:00.000Z",
+        hook_event_name: "stop",
+        conversation_id: "conv-inner-ts",
+        workspace_roots: ["/c:/Development/InnerTs"],
+      }),
+    },
+  });
+  assert.equal(innerTs.ts, "2026-07-01T12:00:00.000Z");
+  assert.ok(innerTs.project);
+}
+
 const emptyBehavior = scoreBehaviorFromPrompts([]);
 assert.equal(emptyBehavior.archetype, "Sprinter");
 assert.equal(emptyBehavior.fluencyScore, 50);
@@ -1200,6 +1230,60 @@ promptCountDb.close();
   }
 }
 
+// enrichWithLlm writes cache atomically (temp file then rename; no leftover .tmp)
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  const cacheRoot = path.join(tmp, "llm-atomic-cache");
+  process.env.OPENAI_API_KEY = "test-key-not-real";
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: "Cached coaching summary",
+                actions: ["Do one concrete thing"],
+              }),
+            },
+          },
+        ],
+      };
+    },
+  });
+  try {
+    const llmReport = {
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    };
+    const llmDet = buildDeterministicRecommendations(llmReport);
+    const llmOut = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview"],
+    });
+    assert.equal(llmOut.source, "hybrid");
+    const cacheDir = path.join(cacheRoot, "cache");
+    const cacheFile = path.join(cacheDir, "llm-recommendations.json");
+    assert.ok(fs.existsSync(cacheFile));
+    const leftovers = fs.readdirSync(cacheDir).filter((f) => f.endsWith(".tmp"));
+    assert.deepEqual(leftovers, []);
+    const cached = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    assert.ok(Object.keys(cached).length >= 1);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
 // Daily chart: last 30 days, not the oldest 30
 const windowDbPath = path.join(tmp, "daily-window.db");
 const windowDb = openDatabase(windowDbPath);
@@ -1583,6 +1667,7 @@ await new Promise((r) => setTimeout(r, 150));
 await stopWatch();
 assert.ok(refreshes >= 1);
 assert.equal(maxActive, 1);
+assert.ok(fs.existsSync(path.join(tmp, "watch-data", "events")));
 const watchReportFiles = fs.readdirSync(path.join(tmp, "watch-reports"));
 assert.ok(watchReportFiles.includes("latest.html"));
 assert.ok(watchReportFiles.includes("latest.json"));
@@ -1852,6 +1937,30 @@ corruptDb.close();
   const shellFail = toolsReport.toolFailures.find((r) => r.tool_name === "Shell");
   assert.equal(shellFail.failures, 2);
   assert.equal(shellFail.last_error, "aaa latest error");
+  // NULL tool_name groups must still resolve last_error (SQL NULL = NULL is unknown)
+  insertToolEvt.run(
+    "2026-06-20T10:04:00.000Z",
+    "toolFailure",
+    "conv-tools",
+    null,
+    "zzz older null-tool error",
+    "t.jsonl",
+    5
+  );
+  insertToolEvt.run(
+    "2026-06-20T10:05:00.000Z",
+    "toolFailure",
+    "conv-tools",
+    null,
+    "aaa latest null-tool error",
+    "t.jsonl",
+    6
+  );
+  const toolsReportNull = buildJsonReport(toolsDb);
+  assert.equal(toolsReportNull.toolFailures.length, 3);
+  const nullFail = toolsReportNull.toolFailures.find((r) => r.tool_name == null);
+  assert.equal(nullFail.failures, 2);
+  assert.equal(nullFail.last_error, "aaa latest null-tool error");
   toolsDb.close();
 }
 
@@ -1979,10 +2088,18 @@ corruptDb.close();
     sourceFile: "status-test.jsonl",
     sourceLine: 2,
   });
+  // Blank conversation ids must not inflate session totals (aligned with rollups)
+  insertEventRow(statusDb, {
+    ...insertEv,
+    conversationId: "",
+    generationId: "status-gen-blank",
+    sourceFile: "status-test.jsonl",
+    sourceLine: 3,
+  });
   // No rollup — sessions table stays empty (ingest --no-rollup scenario)
   const statusSessions = queryScalar(
     statusDb,
-    `SELECT COUNT(DISTINCT conversation_id) AS sessions FROM events WHERE conversation_id IS NOT NULL`
+    `SELECT COUNT(DISTINCT NULLIF(conversation_id, '')) AS sessions FROM events`
   );
   const reportSessions = buildJsonReport(statusDb).totals.sessions;
   assert.equal(statusSessions.sessions, 2);
