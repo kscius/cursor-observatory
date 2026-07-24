@@ -16,11 +16,20 @@ import {
   projectFromTranscriptPath,
   stripBom,
   unwrapAuditEntry,
+  normalizeTs,
   num,
 } from "./parse.mjs";
 
-function* readLinesFrom(filePath, startLine = 0) {
-  const content = fs.readFileSync(filePath, "utf8");
+/** Count newline-terminated physical lines (matches checkpoint line numbers). */
+function countCompleteLines(content) {
+  let n = 0;
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === "\n") n++;
+  }
+  return n;
+}
+
+function* readLinesFromContent(content, startLine = 0) {
   const endsWithNewline = content.endsWith("\n");
   const lines = content.split(/\r?\n/);
   let lastNonEmptyIndex = -1;
@@ -43,11 +52,19 @@ function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
   if (!fs.existsSync(filePath)) return { lines: 0, inserted: 0, skipped: 0 };
 
   const stat = fs.statSync(filePath);
+  const content = fs.readFileSync(filePath, "utf8");
+  const completeLineCount = countCompleteLines(content);
   const cp = getCheckpoint(db, filePath);
   let startLine = cp.last_line;
   // Rotated snapshots (*.old) are wholesale replacements, not append-only logs.
   // Same/larger size must still reset — size-shrink detection alone misses replacements.
-  if (replaceOnRead || stat.size < cp.last_size) {
+  // Also reset when the checkpoint points past the current complete line count
+  // (same/larger rewrite with fewer lines; no schema change required).
+  if (
+    replaceOnRead ||
+    stat.size < cp.last_size ||
+    cp.last_line > completeLineCount
+  ) {
     // Log rotation or truncate: line numbers collide with the previous file.
     db.prepare(`DELETE FROM events WHERE source_file = ?`).run(filePath);
     startLine = 0;
@@ -56,7 +73,10 @@ function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
   let skipped = 0;
   let maxLine = startLine;
 
-  for (const { line, lineNo, isTrailingPartialLine } of readLinesFrom(filePath, startLine)) {
+  for (const { line, lineNo, isTrailingPartialLine } of readLinesFromContent(
+    content,
+    startLine
+  )) {
     // Incomplete trailing write (even if currently valid JSON) — wait for a newline
     // before inserting or checkpointing so a mid-append cannot be locked in.
     if (isTrailingPartialLine) {
@@ -86,9 +106,9 @@ function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
   return { lines: maxLine - startLine, inserted, skipped };
 }
 
-/** Prefer ISO `timestamp`, then collector-style `ts`. */
+/** Prefer ISO `timestamp`, then collector-style `ts`; coerce epoch values. */
 function eventTs(outer) {
-  return outer?.timestamp || outer?.ts || null;
+  return normalizeTs(outer?.timestamp ?? outer?.ts ?? null);
 }
 
 /** Align with audit unwrap: status → final_status → reason. */

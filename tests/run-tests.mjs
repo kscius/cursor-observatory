@@ -18,6 +18,7 @@ import {
   projectFromTranscriptPath,
   isInjectedPrompt,
   detectSlashCommand,
+  normalizeTs,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase, insertEvent as insertEventRow, withTransaction, queryScalar } from "../src/db.mjs";
@@ -28,7 +29,7 @@ import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../s
 import { enrichWithLlm } from "../src/llm.mjs";
 import { expandHome, loadConfig } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
-import { runCli, parseIntervalMs } from "../src/cli.mjs";
+import { runCli, parseIntervalMs, assertKnownFlags } from "../src/cli.mjs";
 import { startWatch } from "../src/watch.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -151,6 +152,50 @@ assert.equal(unwrapAuditEntry(innerEventAudit).eventType, "stop");
   });
   assert.equal(innerTs.ts, "2026-07-01T12:00:00.000Z");
   assert.ok(innerTs.project);
+}
+
+// normalizeTs: epoch seconds/ms, numeric strings, ISO passthrough, fallback
+assert.equal(normalizeTs(1718895600), "2024-06-20T15:00:00.000Z");
+assert.equal(normalizeTs(1718895600000), "2024-06-20T15:00:00.000Z");
+assert.equal(normalizeTs("1718895600"), "2024-06-20T15:00:00.000Z");
+assert.equal(normalizeTs("2026-06-18T00:34:02.971Z"), "2026-06-18T00:34:02.971Z");
+assert.equal(normalizeTs(null, "fallback-ts"), "fallback-ts");
+
+// unwrapAuditEntry: numeric epoch-ms timestamp coerces to ISO
+{
+  const numericTs = unwrapAuditEntry({
+    timestamp: 1718895600000,
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "stop",
+        conversation_id: "conv-numeric-ts",
+      }),
+    },
+  });
+  assert.equal(numericTs.ts, "2024-06-20T15:00:00.000Z");
+}
+
+// Transcript parser honors nested message.role when top-level role is absent
+{
+  const nestedRoleParsed = parseTranscriptRecords(
+    [
+      JSON.stringify({
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "<user_query>\nnested role prompt\n</user_query>" }],
+        },
+      }),
+      JSON.stringify({
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", name: "Shell", input: {} }],
+        },
+      }),
+    ],
+    { conversationId: "conv-nested-role", project: "p", ts: null, source: "t" }
+  );
+  assert.equal(nestedRoleParsed.promptCount, 1);
+  assert.equal(nestedRoleParsed.toolCount, 1);
 }
 
 const emptyBehavior = scoreBehaviorFromPrompts([]);
@@ -2128,6 +2173,26 @@ corruptDb.close();
   assert.match(clipHtml, /navigator\.clipboard\?\.writeText/);
 }
 
+// Report HTML guards Chart.js so tables/filters still work when CDN is blocked
+{
+  const chartGuardHtml = buildHtmlReport({
+    generatedAt: "2026-06-20T12:00:00.000Z",
+    totals: { sessions: 0, events: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0 },
+    behavior: {},
+    daily: [],
+    hourlyToday: [],
+    topProjects: [],
+    topModels: [],
+    topTools: [],
+    toolFailures: [],
+    toolUsage: [],
+    recentSessions: [],
+    sessionEvents: {},
+  });
+  assert.match(chartGuardHtml, /typeof Chart !== 'undefined'/);
+  assert.match(chartGuardHtml, /if \(hasChart\)/);
+}
+
 // Live fluency/archetype surface when no behavior_snapshots row exists yet
 {
   const liveDb = openDatabase(path.join(tmp, "live-behavior.db"));
@@ -2274,6 +2339,20 @@ try {
 }
 await assert.rejects(() => runCli(["not-a-command"]), /Unknown command: not-a-command/);
 
+// Unknown CLI flags rejected before config/DB work
+assert.doesNotThrow(() => assertKnownFlags("dashboard", ["--full", "--no-open", "--with-llm"]));
+assert.doesNotThrow(() => assertKnownFlags("watch", ["--interval", "5", "--with-llm"]));
+assert.doesNotThrow(() => assertKnownFlags("ingest", ["--full", "--no-rollup"]));
+assert.throws(
+  () => assertKnownFlags("dashboard", ["--no-opeen"]),
+  /Unknown flag for dashboard: --no-opeen/
+);
+assert.throws(
+  () => assertKnownFlags("status", ["--json"]),
+  /Unknown flag for status: --json/
+);
+await assert.rejects(() => runCli(["dashboard", "--no-opeen"]), /Unknown flag for dashboard: --no-opeen/);
+
 // --interval validation
 assert.equal(parseIntervalMs([]), 30000);
 assert.equal(parseIntervalMs(["--interval", "60"]), 60000);
@@ -2281,6 +2360,180 @@ assert.throws(() => parseIntervalMs(["--interval"]), /requires a positive number
 assert.throws(() => parseIntervalMs(["--interval", "0"]), /Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "-5"]), /requires a positive number|Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "abc"]), /Invalid --interval/);
+
+// Live agent-audit.jsonl rewrite: fewer lines with same/larger size still resets
+{
+  const liveRewriteDir = path.join(tmp, "live-rewrite", "logs");
+  fs.mkdirSync(liveRewriteDir, { recursive: true });
+  const liveRewriteAudit = path.join(liveRewriteDir, "agent-audit.jsonl");
+  const liveRewriteLine1 = JSON.stringify({
+    timestamp: "2026-06-20T12:00:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-live-rewrite-old-1",
+        hook_event_name: "stop",
+        model: "old-a",
+        input_tokens: 1,
+        output_tokens: 0,
+      }),
+    },
+  });
+  const liveRewriteLine2 = JSON.stringify({
+    timestamp: "2026-06-20T12:01:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-live-rewrite-old-2",
+        hook_event_name: "stop",
+        model: "old-b",
+        input_tokens: 2,
+        output_tokens: 0,
+      }),
+    },
+  });
+  fs.writeFileSync(liveRewriteAudit, liveRewriteLine1 + "\n" + liveRewriteLine2 + "\n");
+
+  const liveRewriteDb = openDatabase(path.join(tmp, "live-rewrite.db"));
+  const liveRewriteConfig = {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory-live-rewrite"),
+    hooksLogsDir: liveRewriteDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: true,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  };
+  ingestAll(liveRewriteDb, liveRewriteConfig);
+  assert.equal(liveRewriteDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
+
+  const liveRewriteNew = JSON.stringify({
+    timestamp: "2026-06-20T13:00:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-live-rewrite-new",
+        hook_event_name: "stop",
+        model: "new-model",
+        input_tokens: 3,
+        output_tokens: 0,
+      }),
+    },
+  });
+  // Pad so replacement is larger than the previous file (size-shrink path would not fire).
+  fs.writeFileSync(liveRewriteAudit, liveRewriteNew + " ".repeat(256) + "\n");
+  const liveRewriteSummary = ingestAll(liveRewriteDb, liveRewriteConfig);
+  assert.equal(liveRewriteSummary.audit.inserted, 1);
+  assert.equal(liveRewriteDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 1);
+  assert.equal(
+    liveRewriteDb
+      .prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?")
+      .get("conv-live-rewrite-old-1").n,
+    0
+  );
+  assert.equal(
+    liveRewriteDb
+      .prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?")
+      .get("conv-live-rewrite-new").n,
+    1
+  );
+  liveRewriteDb.close();
+}
+
+// Secondary session-summary: numeric epoch-ms timestamp is stored as ISO
+{
+  const numericSessionDir = path.join(tmp, "numeric-session-hooks", "logs");
+  fs.mkdirSync(numericSessionDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(numericSessionDir, "session-summary.jsonl"),
+    JSON.stringify({
+      timestamp: 1718895600000,
+      conversation_id: "conv-session-numeric-ts",
+      final_status: "completed",
+    }) + "\n"
+  );
+  const numericSessionDb = openDatabase(path.join(tmp, "numeric-session.db"));
+  const numericSessionSummary = ingestAll(numericSessionDb, {
+    cursorHome: path.join(tmp, "numeric-session-hooks"),
+    dataDir: path.join(tmp, "observatory-numeric-session"),
+    hooksLogsDir: numericSessionDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: true,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(numericSessionSummary.session.inserted, 1);
+  assert.equal(
+    numericSessionDb
+      .prepare("SELECT ts FROM events WHERE conversation_id = ?")
+      .get("conv-session-numeric-ts").ts,
+    "2024-06-20T15:00:00.000Z"
+  );
+
+  // Recent epoch-ms audit events must not be pruned by ISO string retention compares
+  const recentEpochMs = Date.now();
+  const epochHooksDir = path.join(tmp, "epoch-retention-hooks", "logs");
+  fs.mkdirSync(epochHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(epochHooksDir, "agent-audit.jsonl"),
+    JSON.stringify({
+      timestamp: recentEpochMs,
+      data: {
+        raw: JSON.stringify({
+          conversation_id: "conv-epoch-retention",
+          hook_event_name: "stop",
+          model: "epoch-model",
+          input_tokens: 5,
+          output_tokens: 1,
+        }),
+      },
+    }) + "\n"
+  );
+  const epochDb = openDatabase(path.join(tmp, "epoch-retention.db"));
+  ingestAll(epochDb, {
+    cursorHome: path.join(tmp, "epoch-retention-hooks"),
+    dataDir: path.join(tmp, "observatory-epoch-retention"),
+    hooksLogsDir: epochHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: true,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  const storedTs = epochDb
+    .prepare("SELECT ts FROM events WHERE conversation_id = ?")
+    .get("conv-epoch-retention").ts;
+  assert.match(storedTs, /^\d{4}-\d{2}-\d{2}T/);
+  const pruned = applyRetention(epochDb, { retention: { keepRawEventsDays: 30 } });
+  assert.equal(pruned.prunedEvents, 0);
+  assert.equal(
+    epochDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-epoch-retention")
+      .n,
+    1
+  );
+  runAllRollups(epochDb);
+  const dayKey = storedTs.slice(0, 10);
+  assert.ok(
+    epochDb.prepare("SELECT 1 AS ok FROM daily_stats WHERE day_key = ?").get(dayKey),
+    "rollup day_key should match ISO date prefix"
+  );
+  epochDb.close();
+  numericSessionDb.close();
+}
 
 db.close();
 try {
