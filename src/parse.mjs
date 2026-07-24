@@ -38,6 +38,41 @@ export function primaryWorkspace(roots) {
   return first.replace(/\//g, path.sep);
 }
 
+/**
+ * Normalize timestamps to ISO-8601 strings for retention/rollup string compares.
+ * Accepts epoch seconds/ms (number or numeric string); passes through other strings.
+ */
+export function normalizeTs(ts, fallback = null) {
+  if (typeof ts === "number" && Number.isFinite(ts)) {
+    const ms = ts < 1e12 ? ts * 1000 : ts;
+    const d = new Date(ms);
+    return Number.isNaN(d.getTime()) ? fallback : d.toISOString();
+  }
+  if (typeof ts === "string" && ts.trim()) {
+    const trimmed = ts.trim();
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) {
+        const ms = n < 1e12 ? n * 1000 : n;
+        const d = new Date(ms);
+        if (!Number.isNaN(d.getTime())) return d.toISOString();
+      }
+    }
+    return ts;
+  }
+  return fallback;
+}
+
+/** First non-empty timestamp candidate (skips null/undefined/blank strings). */
+export function pickTs(...candidates) {
+  for (const c of candidates) {
+    if (c === null || c === undefined) continue;
+    if (typeof c === "string" && !c.trim()) continue;
+    return c;
+  }
+  return null;
+}
+
 export function unwrapAuditEntry(outer) {
   if (!outer || typeof outer !== "object") return null;
 
@@ -60,7 +95,9 @@ export function unwrapAuditEntry(outer) {
     outer.hook_event_name ||
     "unknown";
 
-  const ts = outer.timestamp || inner.timestamp || outer.ts || inner.ts || null;
+  const ts = normalizeTs(
+    pickTs(outer.timestamp, inner.timestamp, outer.ts, inner.ts)
+  );
   const workspaceRoots = Array.isArray(inner.workspace_roots) ? inner.workspace_roots : [];
 
   return {
@@ -195,7 +232,7 @@ export function parseTranscriptRecords(lines, meta) {
       continue;
     }
 
-    const role = e.role;
+    const role = e.role ?? e.message?.role;
     const content = e.message?.content ?? e.content;
 
     if (role === "assistant" && Array.isArray(content)) {

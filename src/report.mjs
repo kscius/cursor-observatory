@@ -864,86 +864,90 @@ window.__REPORT__ = ${jsonEmbed};
   const ok = '#34d399';
   const purple = '#a78bfa';
 
-  Chart.defaults.color = muted;
-  Chart.defaults.borderColor = grid;
-  Chart.defaults.font.family = '"DM Sans", system-ui, sans-serif';
+  // Charts are optional — CDN may be blocked offline; keep tables/filters working.
+  const hasChart = typeof Chart !== 'undefined';
+  if (hasChart) {
+    Chart.defaults.color = muted;
+    Chart.defaults.borderColor = grid;
+    Chart.defaults.font.family = '"DM Sans", system-ui, sans-serif';
 
-  const hourly = d.hourlyToday || [];
-  new Chart(document.getElementById('chartHourly'), {
-    type: 'bar',
-    data: {
-      labels: hourly.map(h => (h.hour_key || '').slice(11, 13) + ':00'),
-      datasets: [{ label: 'Input tokens', data: hourly.map(h => h.input_tokens || 0), backgroundColor: accent }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
-  });
+    const hourly = d.hourlyToday || [];
+    new Chart(document.getElementById('chartHourly'), {
+      type: 'bar',
+      data: {
+        labels: hourly.map(h => (h.hour_key || '').slice(11, 13) + ':00'),
+        datasets: [{ label: 'Input tokens', data: hourly.map(h => h.input_tokens || 0), backgroundColor: accent }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    });
 
-  const daily = d.daily || [];
-  new Chart(document.getElementById('chartDaily'), {
-    type: 'line',
-    data: {
-      labels: daily.map(x => x.day_key),
-      datasets: [
-        { label: 'Input', data: daily.map(x => x.input_tokens || 0), borderColor: accent, tension: 0.3, fill: false },
-        { label: 'Output', data: daily.map(x => x.output_tokens || 0), borderColor: ok, tension: 0.3, fill: false },
-        { label: 'Sessions', data: daily.map(x => x.sessions || 0), borderColor: purple, tension: 0.3, yAxisID: 'y1' }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      scales: { y: { beginAtZero: true }, y1: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false } } }
-    }
-  });
+    const daily = d.daily || [];
+    new Chart(document.getElementById('chartDaily'), {
+      type: 'line',
+      data: {
+        labels: daily.map(x => x.day_key),
+        datasets: [
+          { label: 'Input', data: daily.map(x => x.input_tokens || 0), borderColor: accent, tension: 0.3, fill: false },
+          { label: 'Output', data: daily.map(x => x.output_tokens || 0), borderColor: ok, tension: 0.3, fill: false },
+          { label: 'Sessions', data: daily.map(x => x.sessions || 0), borderColor: purple, tension: 0.3, yAxisID: 'y1' }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: { y: { beginAtZero: true }, y1: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false } } }
+      }
+    });
 
-  const projects = (d.topProjects || []).slice(0, 10);
-  new Chart(document.getElementById('chartProjects'), {
-    type: 'bar',
-    data: {
-      labels: projects.map(p => (p.project || '').split(/[\\\\/]/).pop() || '?'),
-      datasets: [{ label: 'Input tokens', data: projects.map(p => p.input_tokens || 0), backgroundColor: accent }]
-    },
-    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
-  });
+    const projects = (d.topProjects || []).slice(0, 10);
+    new Chart(document.getElementById('chartProjects'), {
+      type: 'bar',
+      data: {
+        labels: projects.map(p => (p.project || '').split(/[\\\\/]/).pop() || '?'),
+        datasets: [{ label: 'Input tokens', data: projects.map(p => p.input_tokens || 0), backgroundColor: accent }]
+      },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    });
 
-  const models = d.topModels || [];
-  new Chart(document.getElementById('chartModels'), {
-    type: 'doughnut',
-    data: {
-      labels: models.map(m => m.model),
-      datasets: [{ data: models.map(m => m.input_tokens || 0), backgroundColor: [accent, ok, purple, '#fbbf24', '#f87171'] }]
-    },
-    options: { responsive: true, maintainAspectRatio: false }
-  });
+    const models = d.topModels || [];
+    new Chart(document.getElementById('chartModels'), {
+      type: 'doughnut',
+      data: {
+        labels: models.map(m => m.model),
+        datasets: [{ data: models.map(m => m.input_tokens || 0), backgroundColor: [accent, ok, purple, '#fbbf24', '#f87171'] }]
+      },
+      options: { responsive: true, maintainAspectRatio: false }
+    });
 
-  const trend = d.behaviorTrend || [];
-  new Chart(document.getElementById('chartBehavior'), {
-    type: 'line',
-    data: {
-      labels: trend.map(t => t.day),
-      datasets: [{ label: 'Fluency', data: trend.map(t => t.fluency_score || 0), borderColor: ok, tension: 0.3, fill: false }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 100 } } }
-  });
+    const trend = d.behaviorTrend || [];
+    new Chart(document.getElementById('chartBehavior'), {
+      type: 'line',
+      data: {
+        labels: trend.map(t => t.day),
+        datasets: [{ label: 'Fluency', data: trend.map(t => t.fluency_score || 0), borderColor: ok, tension: 0.3, fill: false }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 100 } } }
+    });
 
-  const arch = d.archetypeMix || [];
-  new Chart(document.getElementById('chartArchetypes'), {
-    type: 'bar',
-    data: {
-      labels: arch.map(a => a.archetype),
-      datasets: [{ label: 'Sessions', data: arch.map(a => a.count), backgroundColor: purple }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
-  });
+    const arch = d.archetypeMix || [];
+    new Chart(document.getElementById('chartArchetypes'), {
+      type: 'bar',
+      data: {
+        labels: arch.map(a => a.archetype),
+        datasets: [{ label: 'Sessions', data: arch.map(a => a.count), backgroundColor: purple }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    });
 
-  const tools = (d.topTools || []).slice(0, 10);
-  new Chart(document.getElementById('chartTools'), {
-    type: 'bar',
-    data: {
-      labels: tools.map(t => t.tool_name),
-      datasets: [{ label: 'Uses', data: tools.map(t => t.uses), backgroundColor: accent }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
-  });
+    const tools = (d.topTools || []).slice(0, 10);
+    new Chart(document.getElementById('chartTools'), {
+      type: 'bar',
+      data: {
+        labels: tools.map(t => t.tool_name),
+        datasets: [{ label: 'Uses', data: tools.map(t => t.uses), backgroundColor: accent }]
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    });
+  }
 
   // ——— Interactivity: nav, filter, session trace ———
   const sessions = d.recentSessions || [];
@@ -961,14 +965,16 @@ window.__REPORT__ = ${jsonEmbed};
     localStorage.setItem('observatory-theme', next);
     const btn = document.getElementById('themeToggle');
     if (btn) btn.textContent = next === 'light' ? 'Dark' : 'Light';
-    const muted = next === 'light' ? '#475569' : '#8b9bc4';
-    const grid = next === 'light' ? '#cbd5e1' : '#2a3555';
-    Chart.defaults.color = muted;
-    Chart.defaults.borderColor = grid;
-    document.querySelectorAll('canvas').forEach(canvas => {
-      const chart = Chart.getChart(canvas);
-      if (chart) chart.update();
-    });
+    if (hasChart) {
+      const muted = next === 'light' ? '#475569' : '#8b9bc4';
+      const grid = next === 'light' ? '#cbd5e1' : '#2a3555';
+      Chart.defaults.color = muted;
+      Chart.defaults.borderColor = grid;
+      document.querySelectorAll('canvas').forEach(canvas => {
+        const chart = Chart.getChart(canvas);
+        if (chart) chart.update();
+      });
+    }
   }
 
   applyTheme(getTheme());
