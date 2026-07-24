@@ -63,6 +63,16 @@ export function normalizeTs(ts, fallback = null) {
   return fallback;
 }
 
+/** First non-empty timestamp candidate (skips null/undefined/blank strings). */
+export function pickTs(...candidates) {
+  for (const c of candidates) {
+    if (c === null || c === undefined) continue;
+    if (typeof c === "string" && !c.trim()) continue;
+    return c;
+  }
+  return null;
+}
+
 export function unwrapAuditEntry(outer) {
   if (!outer || typeof outer !== "object") return null;
 
@@ -86,7 +96,7 @@ export function unwrapAuditEntry(outer) {
     "unknown";
 
   const ts = normalizeTs(
-    outer.timestamp ?? inner.timestamp ?? outer.ts ?? inner.ts ?? null
+    pickTs(outer.timestamp, inner.timestamp, outer.ts, inner.ts)
   );
   const workspaceRoots = Array.isArray(inner.workspace_roots) ? inner.workspace_roots : [];
 

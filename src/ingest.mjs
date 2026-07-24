@@ -17,6 +17,7 @@ import {
   stripBom,
   unwrapAuditEntry,
   normalizeTs,
+  pickTs,
   num,
 } from "./parse.mjs";
 
@@ -108,7 +109,7 @@ function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
 
 /** Prefer ISO `timestamp`, then collector-style `ts`; coerce epoch values. */
 function eventTs(outer) {
-  return normalizeTs(outer?.timestamp ?? outer?.ts ?? null);
+  return normalizeTs(pickTs(outer?.timestamp, outer?.ts));
 }
 
 /** Align with audit unwrap: status → final_status → reason. */

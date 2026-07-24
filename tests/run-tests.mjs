@@ -161,6 +161,21 @@ assert.equal(normalizeTs("1718895600"), "2024-06-20T15:00:00.000Z");
 assert.equal(normalizeTs("2026-06-18T00:34:02.971Z"), "2026-06-18T00:34:02.971Z");
 assert.equal(normalizeTs(null, "fallback-ts"), "fallback-ts");
 
+// Blank timestamp must fall through to ts (pickTs skips empty strings)
+{
+  const blankOuter = unwrapAuditEntry({
+    timestamp: "",
+    ts: "2026-07-01T12:00:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "stop",
+        conversation_id: "conv-blank-ts",
+      }),
+    },
+  });
+  assert.equal(blankOuter.ts, "2026-07-01T12:00:00.000Z");
+}
+
 // unwrapAuditEntry: numeric epoch-ms timestamp coerces to ISO
 {
   const numericTs = unwrapAuditEntry({
