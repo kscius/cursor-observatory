@@ -49,6 +49,30 @@ const COMMANDS = new Set([
   "watch",
 ]);
 
+/** Per-command allowed flags (valued flags listed by name; value skipped separately). */
+const COMMAND_FLAGS = {
+  status: new Set(),
+  rollup: new Set(),
+  prune: new Set(),
+  ingest: new Set(["--full", "--no-rollup"]),
+  report: new Set(["--json", "--with-llm"]),
+  dashboard: new Set(["--full", "--no-open", "--with-llm"]),
+  watch: new Set(["--interval", "--with-llm"]),
+};
+
+export function assertKnownFlags(cmd, rest) {
+  const allowed = COMMAND_FLAGS[cmd];
+  if (!allowed) return;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (typeof arg !== "string" || !arg.startsWith("-")) continue;
+    if (!allowed.has(arg)) {
+      throw new Error(`Unknown flag for ${cmd}: ${arg}`);
+    }
+    if (arg === "--interval") i += 1; // skip value; parseIntervalMs validates it
+  }
+}
+
 export function parseIntervalMs(rest, flag = "--interval") {
   const idx = rest.indexOf(flag);
   if (idx === -1) return 30000;
@@ -72,6 +96,7 @@ export async function runCli(argv) {
   if (!COMMANDS.has(cmd)) {
     throw new Error(`Unknown command: ${cmd}`);
   }
+  assertKnownFlags(cmd, rest);
 
   const config = loadConfig();
   ensureDataDirs(config);
