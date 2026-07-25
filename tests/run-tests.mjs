@@ -451,6 +451,37 @@ const modelNoiseRow = rollupDb
   .get(modelNoiseConv);
 assert.equal(modelNoiseRow.model_primary, "composer-2.5");
 
+// model_primary ties must break alphabetically (stable with daily_stats attribution)
+const modelTieConv = "conv-model-tie";
+insertEvent.run(
+  "2026-06-20T11:30:00.000Z",
+  "stop",
+  modelTieConv,
+  "zeta-model",
+  1,
+  1,
+  null,
+  "r-tie.jsonl",
+  1
+);
+insertEvent.run(
+  "2026-06-20T11:31:00.000Z",
+  "stop",
+  modelTieConv,
+  "alpha-model",
+  1,
+  1,
+  null,
+  "r-tie.jsonl",
+  2
+);
+rollupSessions(rollupDb);
+assert.equal(
+  rollupDb.prepare("SELECT model_primary FROM sessions WHERE conversation_id = ?").get(modelTieConv)
+    .model_primary,
+  "alpha-model"
+);
+
 // duration_ms = 0 must be preserved (not coerced to null via ||)
 const zeroDurConv = "conv-zero-duration";
 insertEvent.run(
@@ -1409,6 +1440,106 @@ multiModelPromptDb.close();
   }
 }
 
+// enrichWithLlm skips cache I/O when cacheDir is empty; cache key includes report context
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key-not-real";
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: `Fetch call ${fetchCalls}`,
+                  actions: [`action-${fetchCalls}`],
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
+  };
+  const cwdBefore = fs.readdirSync(process.cwd());
+  try {
+    const llmDet = buildDeterministicRecommendations({
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    });
+    const emptyCacheOut = await enrichWithLlm(
+      {
+        totals: { sessions: 1, input_tokens: 10 },
+        behavior: { fluency_score: 60, archetype: "Explorer" },
+        sessions: [],
+        topTools: [],
+        toolFailures: [],
+      },
+      llmDet,
+      {
+        enabled: true,
+        apiKeyEnv: "OPENAI_API_KEY",
+        useCache: true,
+        cacheDir: "",
+        sections: ["overview"],
+      }
+    );
+    assert.equal(emptyCacheOut.source, "hybrid");
+    assert.equal(fetchCalls, 1);
+    const cwdAfter = fs.readdirSync(process.cwd());
+    assert.ok(!cwdAfter.includes("cache"), "empty cacheDir must not create ./cache");
+    assert.deepEqual(
+      cwdAfter.filter((f) => !cwdBefore.includes(f)),
+      [],
+      "empty cacheDir must not write new cwd entries"
+    );
+
+    const cacheRoot = path.join(tmp, "llm-context-cache");
+    const reportA = {
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    };
+    const detA = buildDeterministicRecommendations(reportA);
+    await enrichWithLlm(reportA, detA, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview"],
+    });
+    assert.equal(fetchCalls, 2);
+    const reportB = {
+      ...reportA,
+      behavior: { fluency_score: 90, archetype: "Architect" },
+    };
+    const detB = buildDeterministicRecommendations(reportB);
+    const outB = await enrichWithLlm(reportB, detB, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview"],
+    });
+    assert.equal(fetchCalls, 3, "changed reportSummary must miss cache");
+    assert.match(outB.sections.overview.llmSummary, /Fetch call 3/);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
 // Daily chart: last 30 days, not the oldest 30
 const windowDbPath = path.join(tmp, "daily-window.db");
 const windowDb = openDatabase(windowDbPath);
@@ -1752,6 +1883,38 @@ const collectorBadEvent = spawnSync(process.execPath, [collectorScript], {
 assert.equal(collectorBadEvent.status, 0);
 assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 2);
 
+// Collector: cursorHome-only config derives <cursorHome>/observatory/events (matches loadConfig)
+{
+  const fakeHome = path.join(tmp, "collector-home");
+  const cursorHome = path.join(tmp, "collector-cursor-home");
+  const cfgDir = path.join(fakeHome, ".cursor", "observatory");
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(path.join(cfgDir, "config.json"), JSON.stringify({ cursorHome }));
+  const homeEnv = process.platform === "win32" ? "USERPROFILE" : "HOME";
+  const collectorEnv = {
+    ...process.env,
+    [homeEnv]: fakeHome,
+    HOME: fakeHome,
+    USERPROFILE: fakeHome,
+  };
+  delete collectorEnv.OBSERVATORY_DATA_DIR;
+  const collectorCursorHome = spawnSync(process.execPath, [collectorScript], {
+    input: JSON.stringify({
+      event: "stop",
+      session_id: "conv-cursor-home",
+      timestamp: "2026-06-20T16:00:00.000Z",
+      model: "cursor-home-model",
+    }),
+    encoding: "utf8",
+    env: collectorEnv,
+  });
+  assert.equal(collectorCursorHome.status, 0, collectorCursorHome.stderr || collectorCursorHome.stdout);
+  const cursorHomeLog = path.join(cursorHome, "observatory", "events", "hook-events.jsonl");
+  assert.ok(fs.existsSync(cursorHomeLog), "collector must honor cursorHome when dataDir omitted");
+  const cursorHomeEntry = JSON.parse(fs.readFileSync(cursorHomeLog, "utf8").trim().split("\n").pop());
+  assert.equal(cursorHomeEntry.conversation_id, "conv-cursor-home");
+}
+
 // Watch smoke: refresh once, stop cleanly, no overlapping onRefresh
 const watchDb = openDatabase(path.join(tmp, "watch.db"));
 const watchHooks = path.join(tmp, "watch-hooks");
@@ -1798,6 +1961,43 @@ assert.ok(watchReportFiles.includes("latest.html"));
 assert.ok(watchReportFiles.includes("latest.json"));
 assert.equal(watchReportFiles.filter((f) => f.startsWith("report-")).length, 0);
 watchDb.close();
+
+// Watch creates missing hooks/projects/events dirs so first writes are watched
+{
+  const ensureDb = openDatabase(path.join(tmp, "watch-ensure.db"));
+  const ensureHooks = path.join(tmp, "watch-ensure-hooks-missing");
+  const ensureProjects = path.join(tmp, "watch-ensure-projects-missing");
+  const ensureData = path.join(tmp, "watch-ensure-data-missing");
+  assert.ok(!fs.existsSync(ensureHooks));
+  assert.ok(!fs.existsSync(ensureProjects));
+  assert.ok(!fs.existsSync(ensureData));
+  const stopEnsure = startWatch(
+    {
+      hooksLogsDir: ensureHooks,
+      projectsDir: ensureProjects,
+      dataDir: ensureData,
+      reportsDir: path.join(tmp, "watch-ensure-reports"),
+      ingest: {
+        auditLogs: false,
+        sessionSummary: false,
+        subagentAudit: false,
+        toolFailures: false,
+        transcripts: false,
+        hookEvents: false,
+        includeRotatedLogs: false,
+      },
+      recommendations: { enabled: false, llm: { enabled: false } },
+    },
+    ensureDb,
+    { intervalMs: 60_000 }
+  );
+  await new Promise((r) => setTimeout(r, 80));
+  await stopEnsure();
+  assert.ok(fs.existsSync(ensureHooks));
+  assert.ok(fs.existsSync(ensureProjects));
+  assert.ok(fs.existsSync(path.join(ensureData, "events")));
+  ensureDb.close();
+}
 
 // Watch stop waits for an in-flight refresh before returning
 {
@@ -2015,6 +2215,13 @@ corruptDb.close();
   assert.notEqual(badJson.status, 0);
   assert.match(badJson.stderr, /error: invalid JSON/i);
   assert.ok(!badJson.stderr.includes("Traceback"));
+
+  const scalarPath = path.join(tmp, "scalar-prompts.json");
+  fs.writeFileSync(scalarPath, "123");
+  const scalar = spawnSync("python3", [behaviorPy, scalarPath], { encoding: "utf8" });
+  assert.notEqual(scalar.status, 0);
+  assert.match(scalar.stderr, /error: expected a JSON list or object/i);
+  assert.ok(!scalar.stderr.includes("Traceback"));
 }
 
 // topTools must not count toolFailure rows as uses

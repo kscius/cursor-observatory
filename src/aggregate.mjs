@@ -32,7 +32,7 @@ export function rollupSessions(db) {
   const modelStmt = db.prepare(
     `SELECT model, COUNT(*) AS c FROM events
      WHERE conversation_id = ? AND event_type = 'stop' AND model IS NOT NULL
-     GROUP BY model ORDER BY c DESC LIMIT 1`
+     GROUP BY model ORDER BY c DESC, model ASC LIMIT 1`
   );
 
   const promptStmt = db.prepare(
