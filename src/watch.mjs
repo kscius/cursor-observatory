@@ -60,7 +60,14 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm 
   const debounced = debounce(refresh, 2000);
   const watchers = [];
 
-  const watchDir = (dir) => {
+  const watchDir = (dir, { ensure = false } = {}) => {
+    if (ensure) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch {
+        /* ignore mkdir failures; existsSync check below still applies */
+      }
+    }
     if (!fs.existsSync(dir)) return;
     try {
       const w = fs.watch(dir, { recursive: true }, debounced);
@@ -72,12 +79,10 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm 
     }
   };
 
-  watchDir(config.hooksLogsDir);
-  watchDir(config.projectsDir);
-  // Ensure collector event dir exists so the first hook write is watched immediately.
-  const eventsDir = path.join(config.dataDir, "events");
-  fs.mkdirSync(eventsDir, { recursive: true });
-  watchDir(eventsDir);
+  // Create roots so the first hook/transcript/collector write is watched immediately.
+  watchDir(config.hooksLogsDir, { ensure: true });
+  watchDir(config.projectsDir, { ensure: true });
+  watchDir(path.join(config.dataDir, "events"), { ensure: true });
 
   refresh();
   const timer = setInterval(refresh, intervalMs);

@@ -8,7 +8,8 @@
  * Output dir resolution (first match wins):
  *   1. OBSERVATORY_DATA_DIR env → <dir>/events
  *   2. dataDir from ~/.cursor/observatory/config.json (or %USERPROFILE%\.cursor\...)
- *   3. ~/.cursor/observatory/events
+ *   3. cursorHome from that config → <cursorHome>/observatory/events
+ *   4. ~/.cursor/observatory/events
  *
  * Primary ingest still reads agent-audit.jsonl; this is a cleaner parallel stream.
  * If you enable hookEvents ingest, set auditLogs to false to avoid double-counting.
@@ -37,6 +38,10 @@ function resolveLogDir() {
       const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
       if (raw && typeof raw.dataDir === "string" && raw.dataDir.trim()) {
         return path.join(expandHome(raw.dataDir), "events");
+      }
+      // Match loadConfig(): derive dataDir from cursorHome when dataDir is omitted.
+      if (raw && typeof raw.cursorHome === "string" && raw.cursorHome.trim()) {
+        return path.join(expandHome(raw.cursorHome), "observatory", "events");
       }
     }
   } catch {
