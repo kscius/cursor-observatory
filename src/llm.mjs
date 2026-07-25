@@ -113,8 +113,11 @@ export async function enrichWithLlm(report, deterministic, config) {
   const apiKeyEnv = config.apiKeyEnv || "OPENAI_API_KEY";
   if (!process.env[apiKeyEnv]) return deterministic;
 
-  const cacheDir = path.join(config.cacheDir || "", "cache");
-  const cache = config.useCache !== false ? readCache(cacheDir) : {};
+  const cacheRoot = typeof config.cacheDir === "string" ? config.cacheDir.trim() : "";
+  const useCache = config.useCache !== false && cacheRoot.length > 0;
+  const cacheDir = useCache ? path.join(cacheRoot, "cache") : null;
+  const cache = useCache ? readCache(cacheDir) : {};
+  let cacheDirty = false;
   const llmSections = {};
   const reportSummary = {
     fluency: report.behavior?.fluency_score,
@@ -122,6 +125,7 @@ export async function enrichWithLlm(report, deterministic, config) {
     input_tokens: report.totals?.input_tokens,
     sessions: report.totals?.sessions,
   };
+  const model = config.model || "gpt-4o-mini";
 
   const keys = config.sections || ["behavior", "overview", "usage", "sessions", "tools"];
 
@@ -129,7 +133,8 @@ export async function enrichWithLlm(report, deterministic, config) {
     const sectionData = deterministic.sections[key];
     if (!sectionData) continue;
 
-    const ck = cacheKey(key, sectionData);
+    // Hash the full prompt inputs so fluency/session context (and model) invalidate stale coaching.
+    const ck = cacheKey(key, { sectionData, reportSummary, model });
     if (cache[ck]) {
       llmSections[key] = cache[ck];
       continue;
@@ -138,13 +143,16 @@ export async function enrichWithLlm(report, deterministic, config) {
     try {
       const prompt = buildSectionPrompt(key, sectionData, reportSummary);
       const result = await callOpenAI(config, prompt);
-      cache[ck] = { ...result, cachedAt: new Date().toISOString() };
+      if (useCache) {
+        cache[ck] = { ...result, cachedAt: new Date().toISOString() };
+        cacheDirty = true;
+      }
       llmSections[key] = result;
     } catch (err) {
       llmSections[key] = { summary: null, actions: [], error: err.message };
     }
   }
 
-  if (config.useCache !== false) writeCache(cacheDir, cache);
+  if (useCache && cacheDirty) writeCache(cacheDir, cache);
   return mergeLlmRecommendations(deterministic, llmSections);
 }

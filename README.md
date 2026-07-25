@@ -120,7 +120,7 @@ Example `hooks.json` entry (adjust the script path):
 }
 ```
 
-Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl` (or `$OBSERVATORY_DATA_DIR/events` / `dataDir` from config).
+Writes cleaner events to `~/.cursor/observatory/events/hook-events.jsonl` (or `$OBSERVATORY_DATA_DIR/events`, `dataDir` from config, or `<cursorHome>/observatory/events` when only `cursorHome` is set).
 
 Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/observatory/config.json` (omitting the key keeps it off; `config.example.json` also sets `false` so audit-only setups do not double-count). If you use the collector, set `"ingest": { "auditLogs": false }` so the same `stop` events are not ingested twice from both `agent-audit.jsonl` and `hook-events.jsonl`. If the collector also handles `sessionEnd`, set `"ingest": { "sessionSummary": false }` so `session-summary.jsonl` does not double-count the same ends. Note: the hook collector itself only reads `~/.cursor/observatory/config.json` (or `OBSERVATORY_DATA_DIR`), not a repo-local `config.json`.
 

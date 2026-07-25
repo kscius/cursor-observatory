@@ -62,8 +62,18 @@ def main() -> int:
     except json.JSONDecodeError as err:
         print(f"error: invalid JSON in {path}: {err}", file=sys.stderr)
         return 1
-    prompts = data if isinstance(data, list) else data.get("prompts", [])
-    result = score_prompts(prompts if isinstance(prompts, list) else [])
+    if isinstance(data, list):
+        prompts = data
+    elif isinstance(data, dict):
+        raw = data.get("prompts", [])
+        prompts = raw if isinstance(raw, list) else []
+    else:
+        print(
+            f"error: expected a JSON list or object in {path}, got {type(data).__name__}",
+            file=sys.stderr,
+        )
+        return 1
+    result = score_prompts(prompts)
     print(json.dumps(result, indent=2))
     return 0
 
