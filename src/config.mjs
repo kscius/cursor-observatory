@@ -83,16 +83,24 @@ export function loadConfig() {
         apiKeyEnv: raw.recommendations?.llm?.apiKeyEnv || "OPENAI_API_KEY",
         baseUrl: raw.recommendations?.llm?.baseUrl || "https://api.openai.com/v1",
         useCache: raw.recommendations?.llm?.useCache !== false,
-        sections: raw.recommendations?.llm?.sections || [
-          "behavior",
-          "overview",
-          "usage",
-          "sessions",
-          "tools",
-        ],
+        sections: normalizeLlmSections(raw.recommendations?.llm?.sections),
       },
     },
   };
+}
+
+const DEFAULT_LLM_SECTIONS = ["behavior", "overview", "usage", "sessions", "tools"];
+
+/** Accept a string as a one-item list; ignore non-array non-string values. */
+function normalizeLlmSections(sections) {
+  if (Array.isArray(sections)) {
+    const keys = sections.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim());
+    return keys.length > 0 ? keys : DEFAULT_LLM_SECTIONS;
+  }
+  if (typeof sections === "string" && sections.trim()) {
+    return [sections.trim()];
+  }
+  return DEFAULT_LLM_SECTIONS;
 }
 
 export function ensureDataDirs(config) {

@@ -161,7 +161,8 @@ function sessionSummaryToEvent(outer, sourceFile, sourceLine) {
   return {
     ts: eventTs(outer),
     eventType: "sessionEnd",
-    conversationId: outer.conversation_id || null,
+    // Collector/hooks may emit session_id instead of conversation_id.
+    conversationId: outer.conversation_id || outer.session_id || null,
     generationId: outer.generation_id || null,
     model: null,
     project: null,
@@ -172,7 +173,7 @@ function sessionSummaryToEvent(outer, sourceFile, sourceLine) {
     cacheWriteTokens: null,
     toolName: null,
     command: null,
-    durationMs: outer.duration_ms ?? null,
+    durationMs: num(outer.duration_ms),
     transcriptPath: null,
     cursorVersion: outer.cursor_version || null,
     composerMode: outer.composer_mode || null,
@@ -377,6 +378,11 @@ export function ingestAll(db, config, { full = false } = {}) {
   if (config.ingest.auditLogs && config.ingest.hookEvents) {
     console.warn(
       "[observatory] auditLogs and hookEvents are both enabled; the same stop events may be counted twice. Disable one in ~/.cursor/observatory/config.json (see README)."
+    );
+  }
+  if (config.ingest.sessionSummary && config.ingest.hookEvents) {
+    console.warn(
+      "[observatory] sessionSummary and hookEvents are both enabled; collector sessionEnd events may double-count durations with session-summary.jsonl. Set ingest.sessionSummary to false when using the collector (see README)."
     );
   }
 
