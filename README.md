@@ -128,7 +128,7 @@ Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/ob
 
 Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
 
-Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`, including `watch --with-llm`). Optional `recommendations.llm.baseUrl` for OpenAI-compatible endpoints (default `https://api.openai.com/v1`; only the OpenAI chat-completions shape is supported today). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
+Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`, including `watch --with-llm`). Optional `recommendations.llm.baseUrl` for OpenAI-compatible endpoints (default `https://api.openai.com/v1`; only the OpenAI chat-completions shape is supported today). Use `recommendations.llm.timeoutMs` to cap each coaching request (default `30000`). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
 
 ## Recommendations (Guide cards)
 
@@ -167,7 +167,7 @@ Or in `~/.cursor/observatory/config.json`:
 }
 ```
 
-Responses are cached at `~/.cursor/observatory/cache/llm-recommendations.json` so repeat reports stay fast. Only aggregated metrics are sent — not full transcripts.
+Responses are cached at `~/.cursor/observatory/cache/llm-recommendations.json` so repeat reports stay fast. Cache keys include model, `baseUrl`, and provider so switching endpoints does not reuse stale coaching. Only aggregated metrics are sent — not full transcripts.
 
 **Cursor SDK / Composer 2.5:** not wired yet; use OpenAI today or extend `src/llm.mjs` with a second provider when you add `@cursor/sdk` and `CURSOR_API_KEY`.
 

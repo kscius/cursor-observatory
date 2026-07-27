@@ -338,11 +338,14 @@ export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
 export function ingestHookEvents(db, dataDir) {
   const f = path.join(dataDir, "events", "hook-events.jsonl");
   return ingestJsonlFile(db, f, (outer, sourceFile, sourceLine) => {
+    // Mirror collector: skip rows without a usable event name (do not invent "unknown").
+    const eventName = outer.hook_event_name || outer.event;
+    if (typeof eventName !== "string" || !eventName.trim()) return null;
     const roots = Array.isArray(outer.workspace_roots) ? outer.workspace_roots : [];
     const prompt = outer.prompt || outer.user_message || null;
     const ev = {
       ts: eventTs(outer),
-      eventType: outer.hook_event_name || outer.event || "unknown",
+      eventType: eventName.trim(),
       conversationId: outer.conversation_id || outer.session_id || null,
       generationId: outer.generation_id || null,
       model: outer.model || null,

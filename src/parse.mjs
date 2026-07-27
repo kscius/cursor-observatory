@@ -40,7 +40,9 @@ export function primaryWorkspace(roots) {
 
 /**
  * Normalize timestamps to ISO-8601 strings for retention/rollup string compares.
- * Accepts epoch seconds/ms (number or numeric string); passes through other strings.
+ * Accepts epoch seconds/ms (number or numeric string) and parseable date strings.
+ * Space-separated datetimes without a zone are treated as UTC.
+ * Unparseable non-empty strings are kept as-is for backward compatibility.
  */
 export function normalizeTs(ts, fallback = null) {
   if (typeof ts === "number" && Number.isFinite(ts)) {
@@ -58,7 +60,15 @@ export function normalizeTs(ts, fallback = null) {
         if (!Number.isNaN(d.getTime())) return d.toISOString();
       }
     }
-    return ts;
+    // Naive "YYYY-MM-DD HH:MM[:SS]" (or T separator) without offset → UTC.
+    let candidate = trimmed;
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(candidate)) {
+      candidate = candidate.replace(" ", "T");
+      if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(candidate)) candidate += "Z";
+    }
+    const parsed = Date.parse(candidate);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+    return trimmed;
   }
   return fallback;
 }
@@ -244,8 +254,11 @@ export function parseTranscriptRecords(lines, meta) {
 
     if (role !== "user") continue;
 
-    const text = extractUserText(content).trim();
-    if (!text || isInjectedPrompt(text)) continue;
+    const raw = extractUserText(content).trim();
+    // Injected / oversized checks use the raw wrapper; stored text is the user query.
+    if (!raw || isInjectedPrompt(raw)) continue;
+    const text = extractUserQuery(raw);
+    if (!text) continue;
 
     promptIdx++;
     records.push({

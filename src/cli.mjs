@@ -31,12 +31,18 @@ Commands:
 `);
 }
 
-function openFile(target) {
+/** Open a file with the OS default handler; missing opener must not crash the CLI. */
+export function openFile(target) {
   const platform = process.platform;
   const cmd = platform === "win32" ? "cmd" : platform === "darwin" ? "open" : "xdg-open";
   const args =
     platform === "win32" ? ["/c", "start", "", `"${target}"`] : [target];
-  spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
+  const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+  child.on("error", () => {
+    // e.g. xdg-open missing in headless environments after report write succeeded.
+  });
+  child.unref();
+  return child;
 }
 
 const COMMANDS = new Set([

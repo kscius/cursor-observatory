@@ -461,7 +461,7 @@ export function buildHtmlReport(data) {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Cursor Observatory</title>
-<script>(function(){var t=localStorage.getItem('observatory-theme');if(t)document.documentElement.setAttribute('data-theme',t);})();</script>
+<script>(function(){try{var t=localStorage.getItem('observatory-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -962,7 +962,7 @@ window.__REPORT__ = ${jsonEmbed};
   function applyTheme(theme) {
     const next = theme === 'light' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next === 'light' ? 'light' : '');
-    localStorage.setItem('observatory-theme', next);
+    try { localStorage.setItem('observatory-theme', next); } catch (e) {}
     const btn = document.getElementById('themeToggle');
     if (btn) btn.textContent = next === 'light' ? 'Dark' : 'Light';
     if (hasChart) {
@@ -984,14 +984,16 @@ window.__REPORT__ = ${jsonEmbed};
 
   const navLinks = document.querySelectorAll('nav.top a');
   const sections = [...navLinks].map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
-  const obs = new IntersectionObserver(entries => {
-    entries.forEach(e => {
-      if (e.isIntersecting) {
-        navLinks.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
-      }
-    });
-  }, { rootMargin: '-30% 0px -60% 0px' });
-  sections.forEach(s => obs.observe(s));
+  if (typeof IntersectionObserver === 'function') {
+    const obs = new IntersectionObserver(entries => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          navLinks.forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+        }
+      });
+    }, { rootMargin: '-30% 0px -60% 0px' });
+    sections.forEach(s => obs.observe(s));
+  }
 
   function fmtN(n) { return n == null ? '—' : Number(n).toLocaleString('en-US'); }
   function escHtml(s) {
