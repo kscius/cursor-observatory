@@ -50,6 +50,16 @@ function resolveLogDir() {
   return path.join(home, ".cursor", "observatory", "events");
 }
 
+/** First non-empty timestamp candidate (skips null/undefined/blank strings). */
+function pickTs(...candidates) {
+  for (const c of candidates) {
+    if (c === null || c === undefined) continue;
+    if (typeof c === "string" && !c.trim()) continue;
+    return c;
+  }
+  return null;
+}
+
 /** Normalize hook timestamps to ISO-8601 so ingest ordering stays consistent. */
 function normalizeTs(ts) {
   if (typeof ts === "number" && Number.isFinite(ts)) {
@@ -99,7 +109,8 @@ async function main() {
   }
 
   const entry = {
-    ts: normalizeTs(payload.timestamp ?? payload.ts),
+    // Blank `timestamp: ""` must fall through to `ts` (?? would keep "").
+    ts: normalizeTs(pickTs(payload.timestamp, payload.ts)),
     hook_event_name: eventName.trim(),
     conversation_id: payload.conversation_id || payload.session_id || null,
     generation_id: payload.generation_id || null,

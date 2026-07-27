@@ -1115,6 +1115,42 @@ assert.equal(aliasEvents[2].ts, "2026-06-21T12:10:00.000Z");
 assert.equal(aliasEvents[2].status, "error");
 aliasDb.close();
 
+// session-summary: session_id alias + string duration_ms
+{
+  const sidHooksDir = path.join(tmp, "session-id-hooks", "logs");
+  fs.mkdirSync(sidHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(sidHooksDir, "session-summary.jsonl"),
+    JSON.stringify({
+      timestamp: "2026-06-21T13:00:00.000Z",
+      session_id: "conv-session-id-alias",
+      duration_ms: "4500",
+      status: "completed",
+    }) + "\n"
+  );
+  const sidDb = openDatabase(path.join(tmp, "session-id-alias.db"));
+  const sidSummary = ingestAll(sidDb, {
+    cursorHome: path.join(tmp, "session-id-hooks"),
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: sidHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: true,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(sidSummary.session.inserted, 1);
+  const sidRow = sidDb.prepare("SELECT conversation_id, duration_ms FROM events").get();
+  assert.equal(sidRow.conversation_id, "conv-session-id-alias");
+  assert.equal(sidRow.duration_ms, 4500);
+  sidDb.close();
+}
+
 // Hook events ingest: collector stream at dataDir/events/hook-events.jsonl
 const hookEventsDir = path.join(tmp, "observatory", "events");
 fs.mkdirSync(hookEventsDir, { recursive: true });
@@ -1213,6 +1249,24 @@ if (!fs.existsSync(userConfigPath)) {
     assert.throws(() => loadConfig(), /Invalid JSON in config file/);
     fs.writeFileSync(repoConfigPath, "[]");
     assert.throws(() => loadConfig(), /must be a JSON object/);
+
+    // String sections become a one-item list; invalid types fall back to defaults
+    fs.writeFileSync(
+      repoConfigPath,
+      JSON.stringify({ recommendations: { llm: { sections: "overview" } } })
+    );
+    assert.deepEqual(loadConfig().recommendations.llm.sections, ["overview"]);
+    fs.writeFileSync(
+      repoConfigPath,
+      JSON.stringify({ recommendations: { llm: { sections: { overview: true } } } })
+    );
+    assert.deepEqual(loadConfig().recommendations.llm.sections, [
+      "behavior",
+      "overview",
+      "usage",
+      "sessions",
+      "tools",
+    ]);
   } finally {
     if (hadRepoConfig) fs.writeFileSync(repoConfigPath, savedRepoConfig);
     else if (fs.existsSync(repoConfigPath)) fs.unlinkSync(repoConfigPath);
@@ -1244,6 +1298,29 @@ try {
   assert.ok(
     warnLines.some((line) => line.includes("auditLogs and hookEvents are both enabled")),
     "expected dual-stream ingest warning"
+  );
+
+  warnLines.length = 0;
+  const warnSessionDb = openDatabase(path.join(tmp, "session-hook-stream.db"));
+  ingestAll(warnSessionDb, {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: hooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: true,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: true,
+      includeRotatedLogs: false,
+    },
+  });
+  warnSessionDb.close();
+  assert.ok(
+    warnLines.some((line) => line.includes("sessionSummary and hookEvents are both enabled")),
+    "expected sessionSummary + hookEvents double-count warning"
   );
 } finally {
   console.warn = origWarn;
@@ -1355,6 +1432,27 @@ const dayRow = dayReport.daily.find((d) => d.day_key === dayKey);
 assert.ok(dayRow, "expected daily row for test day");
 assert.equal(dayRow.sessions, 1);
 dayDb.close();
+
+// Daily chart: blank conversation_id must not inflate session count
+{
+  const blankDayDb = openDatabase(path.join(tmp, "daily-blank-sessions.db"));
+  const blankDay = "2026-06-24";
+  const insertBlank = blankDayDb.prepare(
+    `INSERT INTO events (
+      ts, event_type, conversation_id, model, input_tokens, output_tokens,
+      source_file, source_line
+    ) VALUES (?, 'stop', ?, ?, 10, 1, 'blank.jsonl', ?)`
+  );
+  insertBlank.run(`${blankDay}T10:00:00.000Z`, "conv-real", "model-a", 1);
+  insertBlank.run(`${blankDay}T11:00:00.000Z`, "", "model-a", 2);
+  insertBlank.run(`${blankDay}T12:00:00.000Z`, "", "model-b", 3);
+  runAllRollups(blankDayDb);
+  const blankDayReport = buildJsonReport(blankDayDb);
+  const blankDayRow = blankDayReport.daily.find((d) => d.day_key === blankDay);
+  assert.ok(blankDayRow, "expected daily row for blank-id day");
+  assert.equal(blankDayRow.sessions, 1, "blank conversation_id must be excluded from daily sessions");
+  blankDayDb.close();
+}
 
 // daily_stats.prompt_count must respect model dimension (not duplicate across models)
 const promptCountDbPath = path.join(tmp, "daily-prompt-count.db");
@@ -1593,6 +1691,73 @@ multiModelPromptDb.close();
     });
     assert.equal(fetchCalls, 3, "changed reportSummary must miss cache");
     assert.match(outB.sections.overview.llmSummary, /Fetch call 3/);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
+// enrichWithLlm tolerates null/array LLM cache files
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key-not-real";
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: "Recovered after bad cache",
+                  actions: ["retry"],
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
+  };
+  try {
+    const cacheRoot = path.join(tmp, "llm-bad-cache");
+    const cacheDir = path.join(cacheRoot, "cache");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, "llm-recommendations.json"), "null");
+    const llmReport = {
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    };
+    const llmDet = buildDeterministicRecommendations(llmReport);
+    const out = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview"],
+    });
+    assert.equal(out.source, "hybrid");
+    assert.equal(fetchCalls, 1);
+    assert.match(out.sections.overview.llmSummary, /Recovered after bad cache/);
+
+    fs.writeFileSync(path.join(cacheDir, "llm-recommendations.json"), "[]");
+    const outArr = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview"],
+    });
+    assert.equal(outArr.source, "hybrid");
+    assert.ok(fetchCalls >= 1);
   } finally {
     globalThis.fetch = origFetch;
     if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -1935,13 +2100,30 @@ const collectorReasonEntry = JSON.parse(
 );
 assert.equal(collectorReasonEntry.status, "completed");
 assert.equal(collectorReasonEntry.ts, "2024-06-20T15:00:00.000Z");
+// Blank timestamp must fall through to `ts` (not become "now")
+const collectorBlankTs = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({
+    hook_event_name: "stop",
+    session_id: "conv-blank-ts",
+    timestamp: "",
+    ts: "2026-06-20T17:30:00.000Z",
+    model: "blank-ts-model",
+  }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorBlankTs.status, 0);
+const collectorBlankTsEntry = JSON.parse(
+  fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
+);
+assert.equal(collectorBlankTsEntry.ts, "2026-06-20T17:30:00.000Z");
 const collectorBadEvent = spawnSync(process.execPath, [collectorScript], {
   input: JSON.stringify({ event: { name: "stop" }, session_id: "nope" }),
   encoding: "utf8",
   env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
 });
 assert.equal(collectorBadEvent.status, 0);
-assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 2);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 3);
 
 // Collector: cursorHome-only config derives <cursorHome>/observatory/events (matches loadConfig)
 {

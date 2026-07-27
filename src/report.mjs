@@ -191,10 +191,10 @@ export function buildJsonReport(db) {
          SELECT d.day_key,
                 SUM(d.input_tokens) AS input_tokens,
                 SUM(d.output_tokens) AS output_tokens,
-                (SELECT COUNT(DISTINCT e.conversation_id)
+                (SELECT COUNT(DISTINCT NULLIF(e.conversation_id, ''))
                  FROM events e
                  WHERE e.event_type = 'stop'
-                   AND e.conversation_id IS NOT NULL
+                   AND NULLIF(e.conversation_id, '') IS NOT NULL
                    AND substr(e.ts, 1, 10) = d.day_key) AS sessions
          FROM daily_stats d
          GROUP BY d.day_key

@@ -22,7 +22,10 @@ function readCache(cacheDir) {
   const f = path.join(cacheDir, "llm-recommendations.json");
   if (!fs.existsSync(f)) return {};
   try {
-    return JSON.parse(fs.readFileSync(f, "utf8"));
+    const parsed = JSON.parse(fs.readFileSync(f, "utf8"));
+    // Valid JSON that is not a plain object (null, array, scalar) must not crash lookups.
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed;
   } catch {
     return {};
   }
