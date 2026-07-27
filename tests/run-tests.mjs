@@ -29,7 +29,7 @@ import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../s
 import { enrichWithLlm } from "../src/llm.mjs";
 import { expandHome, loadConfig } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
-import { runCli, parseIntervalMs, assertKnownFlags } from "../src/cli.mjs";
+import { runCli, parseIntervalMs, assertKnownFlags, openFile } from "../src/cli.mjs";
 import { startWatch } from "../src/watch.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -159,6 +159,9 @@ assert.equal(normalizeTs(1718895600), "2024-06-20T15:00:00.000Z");
 assert.equal(normalizeTs(1718895600000), "2024-06-20T15:00:00.000Z");
 assert.equal(normalizeTs("1718895600"), "2024-06-20T15:00:00.000Z");
 assert.equal(normalizeTs("2026-06-18T00:34:02.971Z"), "2026-06-18T00:34:02.971Z");
+assert.equal(normalizeTs("2026-06-18 00:34:02"), "2026-06-18T00:34:02.000Z");
+assert.equal(normalizeTs("2026-06-18T00:34:02"), "2026-06-18T00:34:02.000Z");
+assert.equal(normalizeTs("not-a-date", "fallback-ts"), "not-a-date");
 assert.equal(normalizeTs(null, "fallback-ts"), "fallback-ts");
 
 // Blank timestamp must fall through to ts (pickTs skips empty strings)
@@ -211,6 +214,8 @@ assert.equal(normalizeTs(null, "fallback-ts"), "fallback-ts");
   );
   assert.equal(nestedRoleParsed.promptCount, 1);
   assert.equal(nestedRoleParsed.toolCount, 1);
+  assert.equal(nestedRoleParsed.records[0].text, "nested role prompt");
+  assert.equal(nestedRoleParsed.records[0].hash, hashPrompt("nested role prompt"));
 }
 
 const emptyBehavior = scoreBehaviorFromPrompts([]);
@@ -222,6 +227,7 @@ const exampleConfig = JSON.parse(
 );
 assert.equal(exampleConfig.recommendations?.llm?.enabled, false);
 assert.equal(exampleConfig.ingest?.hookEvents, false);
+assert.equal(exampleConfig.recommendations?.llm?.timeoutMs, 30000);
 
 // loadConfig: omitted hookEvents stays opt-in (false)
 {
@@ -270,8 +276,34 @@ const lines = [
 ];
 const parsed = parseTranscriptRecords(lines, { conversationId: "x", project: "p", ts: null, source: "t" });
 assert.equal(parsed.promptCount, 1);
+assert.equal(parsed.records[0].text, "fix the login bug");
 assert.equal(extractUserQuery("<user_query>hello</user_query>"), "hello");
 assert.equal(sanitizePreview("<user_query>fix auth</user_query>"), "fix auth");
+
+// Wrapper + long injected context: isInjected on raw, stored text is user_query only
+{
+  const wrapped = parseTranscriptRecords(
+    [
+      JSON.stringify({
+        role: "user",
+        message: {
+          content: [
+            {
+              type: "text",
+              text:
+                "<timestamp>2026-01-01</timestamp>\n<user_query>\nshort query\n</user_query>\n" +
+                "x".repeat(100),
+            },
+          ],
+        },
+      }),
+    ],
+    { conversationId: "wrap", project: "p", ts: null, source: "t" }
+  );
+  assert.equal(wrapped.promptCount, 1);
+  assert.equal(wrapped.records[0].text, "short query");
+  assert.ok(!wrapped.records[0].text.includes("<timestamp>"));
+}
 
 const behavior = scoreBehaviorFromPrompts(["fix the auth bug in UserService and run tests"]);
 assert.ok(behavior.fluencyScore >= 0);
@@ -1229,6 +1261,26 @@ assert.equal(
   "user_close"
 );
 
+// Hook events: skip rows without a usable event name (do not invent "unknown")
+{
+  const before = hookDb.prepare("SELECT COUNT(*) AS n FROM events").get().n;
+  const badLine = JSON.stringify({
+    ts: "2026-06-20T16:00:00.000Z",
+    conversation_id: "conv-hook-no-event",
+    input_tokens: 1,
+  });
+  fs.appendFileSync(path.join(hookEventsDir, "hook-events.jsonl"), badLine + "\n");
+  const badSummary = ingestAll(hookDb, hookConfig);
+  assert.equal(badSummary.hookEvents.inserted, 0);
+  assert.ok(badSummary.hookEvents.skipped >= 1);
+  assert.equal(
+    hookDb.prepare("SELECT COUNT(*) AS n FROM events WHERE conversation_id = ?").get("conv-hook-no-event")
+      .n,
+    0
+  );
+  assert.equal(hookDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, before);
+}
+
 const hookDisabledDbPath = path.join(tmp, "hook-disabled.db");
 const hookDisabledDb = openDatabase(hookDisabledDbPath);
 const hookDisabledConfig = { ...hookConfig, ingest: { ...hookConfig.ingest, hookEvents: false } };
@@ -1758,6 +1810,109 @@ multiModelPromptDb.close();
     });
     assert.equal(outArr.source, "hybrid");
     assert.ok(fetchCalls >= 1);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
+// enrichWithLlm: request timeout surfaces cleanly (no hang; no invented coaching)
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key-not-real";
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, opts) => {
+    assert.ok(opts?.signal, "fetch must pass AbortSignal");
+    return await new Promise((_resolve, reject) => {
+      opts.signal.addEventListener("abort", () => {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        reject(err);
+      });
+    });
+  };
+  try {
+    const llmReport = {
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    };
+    const llmDet = buildDeterministicRecommendations(llmReport);
+    const timedOut = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: false,
+      timeoutMs: 20,
+      sections: ["overview"],
+    });
+    assert.equal(timedOut.source, "deterministic");
+    assert.equal(timedOut.sections.overview.llmSummary, null);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key-not-real";
+  const origFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  let lastUrl = "";
+  globalThis.fetch = async (url) => {
+    fetchCalls++;
+    lastUrl = String(url);
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: `From ${lastUrl}`,
+                  actions: ["a"],
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
+  };
+  try {
+    const cacheRoot = path.join(tmp, "llm-baseurl-cache");
+    const llmReport = {
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    };
+    const llmDet = buildDeterministicRecommendations(llmReport);
+    await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      baseUrl: "https://api.openai.com/v1",
+      sections: ["overview"],
+    });
+    assert.equal(fetchCalls, 1);
+    const outAlt = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      baseUrl: "https://example.invalid/v1",
+      sections: ["overview"],
+    });
+    assert.equal(fetchCalls, 2, "changed baseUrl must miss cache");
+    assert.match(outAlt.sections.overview.llmSummary, /example\.invalid/);
   } finally {
     globalThis.fetch = origFetch;
     if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -2595,6 +2750,9 @@ corruptDb.close();
   });
   assert.match(chartGuardHtml, /typeof Chart !== 'undefined'/);
   assert.match(chartGuardHtml, /if \(hasChart\)/);
+  assert.match(chartGuardHtml, /try\{var t=localStorage\.getItem/);
+  assert.match(chartGuardHtml, /try \{ localStorage\.setItem\('observatory-theme'/);
+  assert.match(chartGuardHtml, /typeof IntersectionObserver === 'function'/);
 }
 
 // Live fluency/archetype surface when no behavior_snapshots row exists yet
@@ -2756,6 +2914,13 @@ assert.throws(
   /Unknown flag for status: --json/
 );
 await assert.rejects(() => runCli(["dashboard", "--no-opeen"]), /Unknown flag for dashboard: --no-opeen/);
+
+// openFile attaches an error handler so a missing opener does not crash after report write
+{
+  const child = openFile(path.join(tmp, "missing-report-for-open.html"));
+  assert.equal(typeof child.on, "function");
+  assert.ok(child.listenerCount("error") >= 1);
+}
 
 // --interval validation
 assert.equal(parseIntervalMs([]), 30000);
