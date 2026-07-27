@@ -61,27 +61,48 @@ function writeCache(cacheDir, data) {
   }
 }
 
+const DEFAULT_LLM_TIMEOUT_MS = 30_000;
+
+function resolveTimeoutMs(config) {
+  const n = Number(config?.timeoutMs);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_LLM_TIMEOUT_MS;
+}
+
 async function callOpenAI(config, userPrompt) {
   const apiKey = process.env[config.apiKeyEnv || "OPENAI_API_KEY"];
   if (!apiKey) throw new Error(`Missing ${config.apiKeyEnv || "OPENAI_API_KEY"}`);
 
-  const res = await fetch(`${config.baseUrl || "https://api.openai.com/v1"}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.model || "gpt-4o-mini",
-      temperature: 0.4,
-      max_tokens: 600,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
-      response_format: { type: "json_object" },
-    }),
-  });
+  const timeoutMs = resolveTimeoutMs(config);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${config.baseUrl || "https://api.openai.com/v1"}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: config.model || "gpt-4o-mini",
+        temperature: 0.4,
+        max_tokens: 600,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_object" },
+      }),
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error(`OpenAI request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     const err = await res.text();
@@ -129,6 +150,8 @@ export async function enrichWithLlm(report, deterministic, config) {
     sessions: report.totals?.sessions,
   };
   const model = config.model || "gpt-4o-mini";
+  const baseUrl = config.baseUrl || "https://api.openai.com/v1";
+  const provider = config.provider || "openai";
 
   const keys = config.sections || ["behavior", "overview", "usage", "sessions", "tools"];
 
@@ -136,8 +159,8 @@ export async function enrichWithLlm(report, deterministic, config) {
     const sectionData = deterministic.sections[key];
     if (!sectionData) continue;
 
-    // Hash the full prompt inputs so fluency/session context (and model) invalidate stale coaching.
-    const ck = cacheKey(key, { sectionData, reportSummary, model });
+    // Hash prompt inputs so fluency/session context, model, and endpoint invalidate stale coaching.
+    const ck = cacheKey(key, { sectionData, reportSummary, model, baseUrl, provider });
     if (cache[ck]) {
       llmSections[key] = cache[ck];
       continue;

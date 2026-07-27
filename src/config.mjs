@@ -11,6 +11,14 @@ function normalizeRetentionDays(value) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
+const DEFAULT_LLM_TIMEOUT_MS = 30_000;
+
+function normalizeLlmTimeoutMs(value) {
+  if (value === undefined || value === null || value === "") return DEFAULT_LLM_TIMEOUT_MS;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_LLM_TIMEOUT_MS;
+}
+
 export function expandHome(p) {
   if (!p || typeof p !== "string") return p;
   if (p === "~") return os.homedir();
@@ -82,6 +90,7 @@ export function loadConfig() {
         model: raw.recommendations?.llm?.model || "gpt-4o-mini",
         apiKeyEnv: raw.recommendations?.llm?.apiKeyEnv || "OPENAI_API_KEY",
         baseUrl: raw.recommendations?.llm?.baseUrl || "https://api.openai.com/v1",
+        timeoutMs: normalizeLlmTimeoutMs(raw.recommendations?.llm?.timeoutMs),
         useCache: raw.recommendations?.llm?.useCache !== false,
         sections: normalizeLlmSections(raw.recommendations?.llm?.sections),
       },
