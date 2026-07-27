@@ -75,9 +75,8 @@ async function callOpenAI(config, userPrompt) {
   const timeoutMs = resolveTimeoutMs(config);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let res;
   try {
-    res = await fetch(`${config.baseUrl || "https://api.openai.com/v1"}/chat/completions`, {
+    const res = await fetch(`${config.baseUrl || "https://api.openai.com/v1"}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -95,6 +94,15 @@ async function callOpenAI(config, userPrompt) {
         response_format: { type: "json_object" },
       }),
     });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`OpenAI ${res.status}: ${err.slice(0, 200)}`);
+    }
+
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || "{}";
+    return JSON.parse(text);
   } catch (err) {
     if (err?.name === "AbortError") {
       throw new Error(`OpenAI request timed out after ${timeoutMs}ms`);
@@ -103,15 +111,6 @@ async function callOpenAI(config, userPrompt) {
   } finally {
     clearTimeout(timer);
   }
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`OpenAI ${res.status}: ${err.slice(0, 200)}`);
-  }
-
-  const data = await res.json();
-  const text = data.choices?.[0]?.message?.content || "{}";
-  return JSON.parse(text);
 }
 
 function buildSectionPrompt(sectionKey, sectionData, reportSummary) {
