@@ -1857,6 +1857,48 @@ multiModelPromptDb.close();
   }
 }
 
+// enrichWithLlm: timeout still applies when headers arrive but body stalls
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key-not-real";
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, opts) => ({
+    ok: true,
+    async json() {
+      return await new Promise((_resolve, reject) => {
+        opts.signal.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    },
+  });
+  try {
+    const llmReport = {
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    };
+    const llmDet = buildDeterministicRecommendations(llmReport);
+    const stalled = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: false,
+      timeoutMs: 20,
+      sections: ["overview"],
+    });
+    assert.equal(stalled.source, "deterministic");
+    assert.equal(stalled.sections.overview.llmSummary, null);
+  } finally {
+    globalThis.fetch = origFetch;
+    if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
 {
   const savedApiKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "test-key-not-real";
