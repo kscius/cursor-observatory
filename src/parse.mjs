@@ -83,6 +83,16 @@ export function pickTs(...candidates) {
   return null;
 }
 
+/** First non-blank string candidate (trimmed). Skips non-strings and whitespace-only. */
+export function pickNonBlankString(...candidates) {
+  for (const c of candidates) {
+    if (typeof c !== "string") continue;
+    const trimmed = c.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
 export function unwrapAuditEntry(outer) {
   if (!outer || typeof outer !== "object") return null;
 
@@ -99,11 +109,12 @@ export function unwrapAuditEntry(outer) {
   }
 
   const eventType =
-    inner.hook_event_name ||
-    inner.event ||
-    outer.event ||
-    outer.hook_event_name ||
-    "unknown";
+    pickNonBlankString(
+      inner.hook_event_name,
+      inner.event,
+      outer.event,
+      outer.hook_event_name
+    ) || "unknown";
 
   const ts = normalizeTs(
     pickTs(outer.timestamp, inner.timestamp, outer.ts, inner.ts)

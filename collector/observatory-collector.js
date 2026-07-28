@@ -60,6 +60,16 @@ function pickTs(...candidates) {
   return null;
 }
 
+/** First non-blank string candidate (trimmed). Skips non-strings and whitespace-only. */
+function pickNonBlankString(...candidates) {
+  for (const c of candidates) {
+    if (typeof c !== "string") continue;
+    const trimmed = c.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
 /** Normalize hook timestamps to ISO-8601 so ingest ordering stays consistent. */
 function normalizeTs(ts) {
   if (typeof ts === "number" && Number.isFinite(ts)) {
@@ -77,7 +87,15 @@ function normalizeTs(ts) {
         if (!Number.isNaN(d.getTime())) return d.toISOString();
       }
     }
-    return ts;
+    // Naive "YYYY-MM-DD HH:MM[:SS]" (or T separator) without offset → UTC (match src/parse.mjs).
+    let candidate = trimmed;
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(candidate)) {
+      candidate = candidate.replace(" ", "T");
+      if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(candidate)) candidate += "Z";
+    }
+    const parsed = Date.parse(candidate);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+    return trimmed;
   }
   return new Date().toISOString();
 }
@@ -102,8 +120,8 @@ async function main() {
     return;
   }
 
-  const eventName = payload.hook_event_name || payload.event;
-  if (typeof eventName !== "string" || !eventName.trim()) {
+  const eventName = pickNonBlankString(payload.hook_event_name, payload.event);
+  if (!eventName) {
     process.stdout.write("{}\n");
     return;
   }
@@ -111,7 +129,7 @@ async function main() {
   const entry = {
     // Blank `timestamp: ""` must fall through to `ts` (?? would keep "").
     ts: normalizeTs(pickTs(payload.timestamp, payload.ts)),
-    hook_event_name: eventName.trim(),
+    hook_event_name: eventName,
     conversation_id: payload.conversation_id || payload.session_id || null,
     generation_id: payload.generation_id || null,
     model: payload.model || null,

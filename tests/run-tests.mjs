@@ -19,6 +19,7 @@ import {
   isInjectedPrompt,
   detectSlashCommand,
   normalizeTs,
+  pickNonBlankString,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase, insertEvent as insertEventRow, withTransaction, queryScalar } from "../src/db.mjs";
@@ -163,6 +164,21 @@ assert.equal(normalizeTs("2026-06-18 00:34:02"), "2026-06-18T00:34:02.000Z");
 assert.equal(normalizeTs("2026-06-18T00:34:02"), "2026-06-18T00:34:02.000Z");
 assert.equal(normalizeTs("not-a-date", "fallback-ts"), "not-a-date");
 assert.equal(normalizeTs(null, "fallback-ts"), "fallback-ts");
+assert.equal(pickNonBlankString(" \t\n", " stop "), "stop");
+assert.equal(pickNonBlankString("", "   ", null, 1, "ok"), "ok");
+assert.equal(pickNonBlankString("", "  "), null);
+
+const blankHookEventAudit = unwrapAuditEntry({
+  timestamp: "2026-06-18T00:34:02.971Z",
+  data: {
+    raw: JSON.stringify({
+      hook_event_name: " \t\n",
+      event: "sessionEnd",
+      conversation_id: "conv-blank-hook-event",
+    }),
+  },
+});
+assert.equal(blankHookEventAudit.eventType, "sessionEnd");
 
 // Blank timestamp must fall through to ts (pickTs skips empty strings)
 {
@@ -662,6 +678,13 @@ assert.equal(disabled.reason, "retention disabled");
 const invalidDays = applyRetention(retentionDb, { retention: { keepRawEventsDays: "abc" } });
 assert.equal(invalidDays.pruned, 0);
 assert.equal(invalidDays.reason, "retention disabled");
+let hugeWindow;
+assert.doesNotThrow(() => {
+  hugeWindow = applyRetention(retentionDb, { retention: { keepRawEventsDays: 1e20 } });
+});
+assert.equal(hugeWindow.pruned, 0);
+assert.equal(hugeWindow.reason, "invalid retention window");
+assert.equal(retentionDb.prepare("SELECT COUNT(*) AS n FROM events").get().n, 2);
 const pruned = applyRetention(retentionDb, { retention: { keepRawEventsDays: 30 } });
 assert.equal(pruned.prunedEvents, 1);
 assert.equal(pruned.prunedPrompts, 0);
@@ -1183,6 +1206,54 @@ aliasDb.close();
   sidDb.close();
 }
 
+// subagent-audit preserves conversation_id and session_id aliases
+{
+  const subagentIdHooksDir = path.join(tmp, "subagent-id-hooks", "logs");
+  fs.mkdirSync(subagentIdHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(subagentIdHooksDir, "subagent-audit.jsonl"),
+    [
+      JSON.stringify({
+        ts: "2026-06-21T13:05:00.000Z",
+        event: "subagentStop",
+        conversation_id: "conv-subagent-conversation",
+        subagent_type: "explore",
+        task: "conversation id preserved",
+      }),
+      JSON.stringify({
+        ts: "2026-06-21T13:06:00.000Z",
+        event: "subagentStop",
+        session_id: "conv-subagent-session",
+        subagent_type: "debug",
+        task: "session id preserved",
+      }),
+    ].join("\n") + "\n"
+  );
+  const subagentIdDb = openDatabase(path.join(tmp, "subagent-id.db"));
+  const subagentIdSummary = ingestAll(subagentIdDb, {
+    cursorHome: path.join(tmp, "subagent-id-hooks"),
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: subagentIdHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: true,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(subagentIdSummary.subagent.inserted, 2);
+  const subagentIds = subagentIdDb
+    .prepare("SELECT conversation_id FROM events ORDER BY source_line")
+    .all()
+    .map((r) => r.conversation_id);
+  assert.deepEqual(subagentIds, ["conv-subagent-conversation", "conv-subagent-session"]);
+  subagentIdDb.close();
+}
+
 // Hook events ingest: collector stream at dataDir/events/hook-events.jsonl
 const hookEventsDir = path.join(tmp, "observatory", "events");
 fs.mkdirSync(hookEventsDir, { recursive: true });
@@ -1244,6 +1315,23 @@ const hookAliasRow = hookDb
 assert.equal(hookAliasRow.event_type, "sessionEnd");
 assert.equal(hookAliasRow.input_tokens, 42);
 assert.equal(hookAliasRow.status, "completed");
+
+// Hook events: blank hook_event_name falls through to event alias
+const hookBlankNameAliasLine = JSON.stringify({
+  timestamp: "2026-06-20T14:30:00.000Z",
+  hook_event_name: " \t",
+  event: "stop",
+  session_id: "conv-hook-blank-name-alias",
+  input_tokens: "5",
+});
+fs.appendFileSync(path.join(hookEventsDir, "hook-events.jsonl"), hookBlankNameAliasLine + "\n");
+const hookBlankNameAliasSummary = ingestAll(hookDb, hookConfig);
+assert.equal(hookBlankNameAliasSummary.hookEvents.inserted, 1);
+const hookBlankNameAliasRow = hookDb
+  .prepare("SELECT event_type, conversation_id, input_tokens FROM events WHERE conversation_id = ?")
+  .get("conv-hook-blank-name-alias");
+assert.equal(hookBlankNameAliasRow.event_type, "stop");
+assert.equal(hookBlankNameAliasRow.input_tokens, 5);
 
 // Hook events: reason-only status fallback
 const hookReasonLine = JSON.stringify({
@@ -1817,6 +1905,106 @@ multiModelPromptDb.close();
   }
 }
 
+// enrichWithLlm ignores malformed keyed entries, skips unknown sections, tolerates write failures
+{
+  const savedApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key-not-real";
+  const origFetch = globalThis.fetch;
+  const origWarn = console.warn;
+  let fetchCalls = 0;
+  const warns = [];
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: `Fetched coaching ${fetchCalls}`,
+                  actions: [`action-${fetchCalls}`],
+                }),
+              },
+            },
+          ],
+        };
+      },
+    };
+  };
+  console.warn = (...args) => warns.push(args.join(" "));
+  try {
+    const llmReport = {
+      totals: { sessions: 1, input_tokens: 10 },
+      behavior: { fluency_score: 60, archetype: "Explorer" },
+      sessions: [],
+      topTools: [],
+      toolFailures: [],
+    };
+    const llmDet = buildDeterministicRecommendations(llmReport);
+    const cacheRoot = path.join(tmp, "llm-malformed-keyed-cache");
+
+    await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview", "constructor"],
+    });
+    assert.equal(fetchCalls, 1, "unknown constructor section must be skipped");
+
+    const cacheFile = path.join(cacheRoot, "cache", "llm-recommendations.json");
+    const cached = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    const [cacheKey] = Object.keys(cached);
+
+    cached[cacheKey] = true;
+    fs.writeFileSync(cacheFile, JSON.stringify(cached));
+    const outTrue = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview", "constructor"],
+    });
+    assert.equal(fetchCalls, 2);
+    assert.match(outTrue.sections.overview.llmSummary, /Fetched coaching 2/);
+
+    const cachedAgain = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    const [cacheKey2] = Object.keys(cachedAgain);
+    cachedAgain[cacheKey2] = { summary: 1 };
+    fs.writeFileSync(cacheFile, JSON.stringify(cachedAgain));
+    const outBadSummary = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      sections: ["overview", "constructor"],
+    });
+    assert.equal(fetchCalls, 3);
+    assert.match(outBadSummary.sections.overview.llmSummary, /Fetched coaching 3/);
+
+    const unwritableRoot = path.join(tmp, "llm-cache-write-fails");
+    fs.mkdirSync(unwritableRoot, { recursive: true });
+    fs.writeFileSync(path.join(unwritableRoot, "cache"), "not a directory");
+    await assert.doesNotReject(() =>
+      enrichWithLlm(llmReport, llmDet, {
+        enabled: true,
+        apiKeyEnv: "OPENAI_API_KEY",
+        useCache: true,
+        cacheDir: unwritableRoot,
+        sections: ["overview"],
+      })
+    );
+    assert.ok(warns.some((line) => line.includes("[llm] cache write failed")));
+  } finally {
+    globalThis.fetch = origFetch;
+    console.warn = origWarn;
+    if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedApiKey;
+  }
+}
+
 // enrichWithLlm: request timeout surfaces cleanly (no hang; no invented coaching)
 {
   const savedApiKey = process.env.OPENAI_API_KEY;
@@ -2322,6 +2510,25 @@ const collectorBadEvent = spawnSync(process.execPath, [collectorScript], {
 assert.equal(collectorBadEvent.status, 0);
 assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 3);
 
+// Collector: blank hook_event_name falls through to event; naive datetime → UTC ISO
+const collectorBlankNameAlias = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({
+    hook_event_name: " \t",
+    event: "stop",
+    session_id: "conv-collector-blank-name",
+    timestamp: "2026-06-20 17:45:00",
+  }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorBlankNameAlias.status, 0);
+const collectorBlankNameAliasEntry = JSON.parse(
+  fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
+);
+assert.equal(collectorBlankNameAliasEntry.hook_event_name, "stop");
+assert.equal(collectorBlankNameAliasEntry.conversation_id, "conv-collector-blank-name");
+assert.equal(collectorBlankNameAliasEntry.ts, "2026-06-20T17:45:00.000Z");
+
 // Collector: cursorHome-only config derives <cursorHome>/observatory/events (matches loadConfig)
 {
   const fakeHome = path.join(tmp, "collector-home");
@@ -2436,6 +2643,60 @@ watchDb.close();
   assert.ok(fs.existsSync(ensureProjects));
   assert.ok(fs.existsSync(path.join(ensureData, "events")));
   ensureDb.close();
+}
+
+// Watch falls back to interval-only when recursive and non-recursive fs.watch both fail
+{
+  const watchThrowDb = openDatabase(path.join(tmp, "watch-throw.db"));
+  const origWatch = fs.watch;
+  const origWarn = console.warn;
+  let recursiveWatchCalls = 0;
+  let fallbackWatchCalls = 0;
+  let throwRefreshes = 0;
+  const warnLines = [];
+  fs.watch = (_dir, opts) => {
+    if (opts && typeof opts === "object" && opts.recursive) recursiveWatchCalls++;
+    else fallbackWatchCalls++;
+    throw new Error("mock watch unavailable");
+  };
+  console.warn = (...args) => warnLines.push(args.join(" "));
+  try {
+    const stopThrowWatch = startWatch(
+      {
+        hooksLogsDir: path.join(tmp, "watch-throw-hooks"),
+        projectsDir: path.join(tmp, "watch-throw-projects"),
+        dataDir: path.join(tmp, "watch-throw-data"),
+        reportsDir: path.join(tmp, "watch-throw-reports"),
+        ingest: {
+          auditLogs: false,
+          sessionSummary: false,
+          subagentAudit: false,
+          toolFailures: false,
+          transcripts: false,
+          hookEvents: false,
+          includeRotatedLogs: false,
+        },
+        recommendations: { enabled: false, llm: { enabled: false } },
+      },
+      watchThrowDb,
+      {
+        intervalMs: 60_000,
+        onRefresh: async () => {
+          throwRefreshes++;
+        },
+      }
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    await stopThrowWatch();
+    assert.ok(recursiveWatchCalls >= 3);
+    assert.ok(fallbackWatchCalls >= 3);
+    assert.ok(warnLines.some((line) => line.includes("fs.watch unavailable")));
+    assert.ok(throwRefreshes >= 1);
+  } finally {
+    fs.watch = origWatch;
+    console.warn = origWarn;
+    watchThrowDb.close();
+  }
 }
 
 // Watch stop waits for an in-flight refresh before returning
@@ -2630,6 +2891,30 @@ corruptDb.close();
   assert.match(html, /filterProject\.includes\(sessionProject\)/);
 }
 
+// Report HTML includes CSV formula-injection prefixing
+{
+  const csvFormulaHtml = buildHtmlReport({
+    generatedAt: "2026-07-12T00:00:00.000Z",
+    totals: { input_tokens: 100, output_tokens: 0 },
+    today: {},
+    behavior: null,
+    daily: [],
+    hourlyToday: [],
+    topProjects: [],
+    topModels: [],
+    topTools: [],
+    toolFailures: [],
+    toolUsage: [],
+    recentSessions: [],
+    sessionEvents: {},
+    recommendations: { enabled: false },
+  });
+  assert.match(csvFormulaHtml, /function csvEscape\(v\)/);
+  assert.match(csvFormulaHtml, /\^\[=\+\\-@\\t\\r\]/);
+  assert.match(csvFormulaHtml, /s = "'" \+ s/);
+  assert.match(csvFormulaHtml, /\[",\\r\\n\]/);
+}
+
 // Optional Python analyzer: coerce non-string prompt entries
 {
   const behaviorPy = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "analyzer", "behavior.py");
@@ -2817,6 +3102,7 @@ corruptDb.close();
   assert.ok(liveReport.behavior.fluency_score >= 0);
   assert.ok(liveReport.behavior.archetype);
   assert.ok(liveReport.behavior.dimensions?.contextSetting != null);
+  assert.equal(liveReport.behavior.real_prompt_count, 1);
   liveDb.close();
 }
 

@@ -61,6 +61,12 @@ function writeCache(cacheDir, data) {
   }
 }
 
+/** Accept only object cache entries with a usable summary and/or actions list. */
+function isUsableCachedEntry(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+  return typeof entry.summary === "string" || Array.isArray(entry.actions);
+}
+
 const DEFAULT_LLM_TIMEOUT_MS = 30_000;
 
 function resolveTimeoutMs(config) {
@@ -155,12 +161,13 @@ export async function enrichWithLlm(report, deterministic, config) {
   const keys = config.sections || ["behavior", "overview", "usage", "sessions", "tools"];
 
   for (const key of keys) {
+    if (typeof key !== "string" || !Object.hasOwn(deterministic.sections, key)) continue;
     const sectionData = deterministic.sections[key];
     if (!sectionData) continue;
 
     // Hash prompt inputs so fluency/session context, model, and endpoint invalidate stale coaching.
     const ck = cacheKey(key, { sectionData, reportSummary, model, baseUrl, provider });
-    if (cache[ck]) {
+    if (isUsableCachedEntry(cache[ck])) {
       llmSections[key] = cache[ck];
       continue;
     }
@@ -178,6 +185,12 @@ export async function enrichWithLlm(report, deterministic, config) {
     }
   }
 
-  if (useCache && cacheDirty) writeCache(cacheDir, cache);
+  if (useCache && cacheDirty) {
+    try {
+      writeCache(cacheDir, cache);
+    } catch (err) {
+      console.warn("[llm] cache write failed:", err.message || err);
+    }
+  }
   return mergeLlmRecommendations(deterministic, llmSections);
 }

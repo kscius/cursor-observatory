@@ -158,6 +158,7 @@ export function buildJsonReport(db) {
       // Prefer rolled-up snapshot scores; fall back to live scoring when none yet.
       fluency_score: behavior?.fluency_score ?? liveBehavior.fluencyScore,
       archetype: behavior?.archetype ?? liveBehavior.archetype,
+      real_prompt_count: behavior?.real_prompt_count ?? liveBehavior.realPromptCount,
       confidence: liveBehavior.confidence,
       dimensions: liveBehavior.dimensions,
     },
@@ -1046,8 +1047,10 @@ window.__REPORT__ = ${jsonEmbed};
   }
 
   function csvEscape(v) {
-    const s = String(v ?? '');
-    return /[",\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    let s = String(v ?? '');
+    // Neutralize spreadsheet formula injection when opened in Excel/Sheets.
+    if (/^[=+\\-@\\t\\r]/.test(s)) s = "'" + s;
+    return /[",\\r\\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
 
   function exportSessionsCsv() {
