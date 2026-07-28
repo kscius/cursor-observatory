@@ -217,13 +217,20 @@ export async function runCli(argv) {
   if (cmd === "watch") {
     const intervalMs = parseIntervalMs(rest);
     const withLlm = rest.includes("--with-llm") || config.recommendations?.llm?.enabled;
-    const stop = startWatch(config, db, {
-      intervalMs,
-      withLlm,
-      onRefresh: (paths) => {
-        console.log(`  Report: ${paths.latestHtml}`);
-      },
-    });
+    let stop;
+    try {
+      stop = startWatch(config, db, {
+        intervalMs,
+        withLlm,
+        onRefresh: (paths) => {
+          console.log(`  Report: ${paths.latestHtml}`);
+        },
+      });
+    } catch (err) {
+      // finally skips close for watch; ensure the handle is released if startup fails.
+      db.close();
+      throw err;
+    }
     await new Promise((resolve) => {
       const onSignal = async () => {
         try {

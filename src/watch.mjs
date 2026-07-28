@@ -73,9 +73,16 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm 
       const w = fs.watch(dir, { recursive: true }, debounced);
       watchers.push(w);
     } catch {
-      /* non-recursive fallback on some platforms */
-      const w = fs.watch(dir, debounced);
-      watchers.push(w);
+      /* non-recursive fallback on some platforms; interval refresh still runs if both fail */
+      try {
+        const w = fs.watch(dir, debounced);
+        watchers.push(w);
+      } catch (err) {
+        console.warn(
+          `[watch] fs.watch unavailable for ${dir}; using interval only:`,
+          err.message || err
+        );
+      }
     }
   };
 

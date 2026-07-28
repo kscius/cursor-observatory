@@ -6,9 +6,13 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 
+/** Cap so Date.now() - days*864e5 stays a valid Date (avoids toISOString RangeError). */
+const MAX_RETENTION_DAYS = 36500; // ~100 years
+
 function normalizeRetentionDays(value) {
   const n = Number(value ?? 0);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.floor(n), MAX_RETENTION_DAYS);
 }
 
 const DEFAULT_LLM_TIMEOUT_MS = 30_000;
