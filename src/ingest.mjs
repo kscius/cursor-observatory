@@ -8,6 +8,7 @@ import {
   setCheckpoint,
   upsertPrompt,
   upsertTranscript,
+  withTransaction,
 } from "./db.mjs";
 import {
   decodeProjectSlug,
@@ -51,10 +52,16 @@ function* readLinesFromContent(content, startLine = 0) {
 }
 
 function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
-  if (!fs.existsSync(filePath)) return { lines: 0, inserted: 0, skipped: 0 };
-
-  const stat = fs.statSync(filePath);
-  const content = fs.readFileSync(filePath, "utf8");
+  let stat;
+  let content;
+  try {
+    stat = fs.statSync(filePath);
+    content = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    // Watch/rotation races: file may disappear between discovery and read.
+    if (err && err.code === "ENOENT") return { lines: 0, inserted: 0, skipped: 0 };
+    throw err;
+  }
   const completeLineCount = countCompleteLines(content);
   const cp = getCheckpoint(db, filePath);
   let startLine = cp.last_line;
@@ -85,22 +92,27 @@ function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
       skipped++;
       continue;
     }
+    let outer;
     try {
-      const outer = JSON.parse(line);
-      const mapped = mapFn(outer, filePath, lineNo);
-      if (!mapped) {
-        skipped++;
-      } else if (Array.isArray(mapped)) {
-        for (const item of mapped) {
-          if (insertEvent(db, item) > 0) inserted++;
-        }
-      } else if (insertEvent(db, mapped) > 0) {
-        inserted++;
-      }
+      outer = JSON.parse(line);
     } catch {
+      // Only malformed JSON is skippable. Mapper/DB errors must not advance the
+      // checkpoint or append-only rows would be permanently lost.
       skipped++;
+      maxLine = lineNo;
+      continue;
     }
-    // Advance past corrupt middle lines once a trailing newline confirms the record.
+    const mapped = mapFn(outer, filePath, lineNo);
+    if (!mapped) {
+      skipped++;
+    } else if (Array.isArray(mapped)) {
+      for (const item of mapped) {
+        if (insertEvent(db, item) > 0) inserted++;
+      }
+    } else if (insertEvent(db, mapped) > 0) {
+      inserted++;
+    }
+    // Advance past complete records once a trailing newline confirms the line.
     maxLine = lineNo;
   }
 
@@ -275,7 +287,13 @@ export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
   let prompts = 0;
 
   for (const filePath of files) {
-    const stat = fs.statSync(filePath);
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (err) {
+      if (err && err.code === "ENOENT") continue;
+      throw err;
+    }
     const conversationId = path.basename(filePath, ".jsonl");
     const prevTranscript = getTranscriptMetadata(db, filePath);
     if (
@@ -287,8 +305,12 @@ export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
       continue;
     }
 
-    if (prevTranscript) {
-      deletePromptsForConversation(db, conversationId, "transcript");
+    let lines;
+    try {
+      lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+    } catch (err) {
+      if (err && err.code === "ENOENT") continue;
+      throw err;
     }
 
     const project =
@@ -297,7 +319,8 @@ export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
         filePath.replace(/\\/g, "/").match(/\/projects\/([^/]+)\//)?.[1]
       );
 
-    const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+    // Parse before mutating DB so a read/parse failure cannot wipe prompts
+    // while leaving fingerprint metadata that would skip future re-ingest.
     const { records, promptCount, toolCount } = parseTranscriptRecords(lines, {
       conversationId,
       project,
@@ -305,31 +328,35 @@ export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
       source: "transcript",
     });
 
-    upsertTranscript(db, {
-      path: filePath,
-      conversationId,
-      project,
-      fileSize: stat.size,
-      mtimeMs: stat.mtimeMs,
-      lineCount: lines.filter((l) => l.trim()).length,
-      promptCount,
-      toolCount,
-    });
-
-    for (const rec of records) {
-      upsertPrompt(db, {
-        conversationId: rec.conversationId,
-        project: rec.project,
-        promptIdx: rec.promptIdx,
-        ts: rec.ts,
-        preview: rec.preview,
-        hash: rec.hash,
-        command: rec.command,
-        charCount: rec.text.length,
-        source: rec.source,
+    withTransaction(db, () => {
+      if (prevTranscript) {
+        deletePromptsForConversation(db, conversationId, "transcript");
+      }
+      upsertTranscript(db, {
+        path: filePath,
+        conversationId,
+        project,
+        fileSize: stat.size,
+        mtimeMs: stat.mtimeMs,
+        lineCount: lines.filter((l) => l.trim()).length,
+        promptCount,
+        toolCount,
       });
-      prompts++;
-    }
+      for (const rec of records) {
+        upsertPrompt(db, {
+          conversationId: rec.conversationId,
+          project: rec.project,
+          promptIdx: rec.promptIdx,
+          ts: rec.ts,
+          preview: rec.preview,
+          hash: rec.hash,
+          command: rec.command,
+          charCount: rec.text.length,
+          source: rec.source,
+        });
+      }
+    });
+    prompts += records.length;
     transcripts++;
   }
 

@@ -73,12 +73,11 @@ export function normalizeTs(ts, fallback = null) {
   return fallback;
 }
 
-/** First non-empty timestamp candidate (skips null/undefined/blank strings). */
+/** First usable timestamp candidate (finite numbers or non-blank strings). */
 export function pickTs(...candidates) {
   for (const c of candidates) {
-    if (c === null || c === undefined) continue;
-    if (typeof c === "string" && !c.trim()) continue;
-    return c;
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+    if (typeof c === "string" && c.trim()) return c;
   }
   return null;
 }
@@ -93,28 +92,37 @@ export function pickNonBlankString(...candidates) {
   return null;
 }
 
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 export function unwrapAuditEntry(outer) {
-  if (!outer || typeof outer !== "object") return null;
+  // Arrays are typeof "object" but are not audit records.
+  if (!isPlainRecord(outer)) return null;
 
   let inner = { ...outer };
   const raw = outer.data?.raw;
   if (typeof raw === "string") {
     try {
-      inner = { ...outer, ...JSON.parse(stripBom(raw.trim())) };
+      const parsed = JSON.parse(stripBom(raw.trim()));
+      if (!isPlainRecord(parsed)) return null;
+      inner = { ...outer, ...parsed };
     } catch {
-      inner = outer;
+      // Unparseable wrapper payload — skip rather than invent an "unknown" event.
+      return null;
     }
-  } else if (outer.data && typeof outer.data === "object" && !outer.data.raw) {
+  } else if (outer.data && isPlainRecord(outer.data) && !outer.data.raw) {
     inner = { ...outer, ...outer.data };
   }
 
-  const eventType =
-    pickNonBlankString(
-      inner.hook_event_name,
-      inner.event,
-      outer.event,
-      outer.hook_event_name
-    ) || "unknown";
+  const eventType = pickNonBlankString(
+    inner.hook_event_name,
+    inner.event,
+    outer.event,
+    outer.hook_event_name
+  );
+  // Mirror hook-event ingest: do not invent "unknown" when no usable name exists.
+  if (!eventType) return null;
 
   const ts = normalizeTs(
     pickTs(outer.timestamp, inner.timestamp, outer.ts, inner.ts)
