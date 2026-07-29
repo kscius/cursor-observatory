@@ -71,7 +71,12 @@ export function assertKnownFlags(cmd, rest) {
   if (!allowed) return;
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
-    if (typeof arg !== "string" || !arg.startsWith("-")) continue;
+    if (typeof arg !== "string") {
+      throw new Error(`Unexpected argument for ${cmd}: ${arg}`);
+    }
+    if (!arg.startsWith("-")) {
+      throw new Error(`Unexpected argument for ${cmd}: ${arg}`);
+    }
     if (!allowed.has(arg)) {
       throw new Error(`Unknown flag for ${cmd}: ${arg}`);
     }
@@ -90,7 +95,12 @@ export function parseIntervalMs(rest, flag = "--interval") {
   if (!Number.isFinite(n) || n <= 0) {
     throw new Error(`Invalid ${flag} value: ${raw} (expected positive seconds)`);
   }
-  return n * 1000;
+  const intervalMs = n * 1000;
+  // Node timers clamp above 2^31-1 ms to 1ms; reject before that happens.
+  if (!Number.isFinite(intervalMs) || intervalMs > 2 ** 31 - 1) {
+    throw new Error(`Invalid ${flag} value: ${raw} (maximum 2147483.647 seconds)`);
+  }
+  return intervalMs;
 }
 
 export async function runCli(argv) {
@@ -183,11 +193,13 @@ export async function runCli(argv) {
     runAllRollups(db);
     const withLlm = rest.includes("--with-llm") || config.recommendations?.llm?.enabled;
     const paths = await writeReports(db, config.reportsDir, config, { withLlm });
-    console.log(`Report HTML: ${paths.latestHtml}`);
-    console.log(`Report JSON: ${paths.latestJson}`);
-    if (withLlm) console.log("  LLM recommendations: enabled");
     if (rest.includes("--json")) {
+      // Machine-readable mode: paths only (no human status lines mixed in).
       console.log(JSON.stringify(paths, null, 2));
+    } else {
+      console.log(`Report HTML: ${paths.latestHtml}`);
+      console.log(`Report JSON: ${paths.latestJson}`);
+      if (withLlm) console.log("  LLM recommendations: enabled");
     }
     return;
   }

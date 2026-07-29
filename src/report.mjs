@@ -830,7 +830,7 @@ footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--border); 
   <section id="tools">
     <div class="section-head">
       <h2>Tools</h2>
-      <p>Agent tool usage and failure rates.</p>
+      <p>Agent tool usage and failure counts.</p>
     </div>
     ${recoTools}
     <div class="grid-2">
@@ -853,7 +853,7 @@ footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--border); 
     </div>
   </section>
 
-  <footer>Generated locally by cursor-observatory. Telemetry stays on this machine; the report may load Chart.js/fonts from public CDNs.</footer>
+  <footer>Generated locally by cursor-observatory. Raw transcripts and hook logs stay on this machine; opt-in LLM coaching sends aggregated metrics to its configured endpoint. The report loads Chart.js/fonts from public CDNs when opened in a browser.</footer>
 </div>
 <script>
 window.__REPORT__ = ${jsonEmbed};
@@ -1287,8 +1287,8 @@ export async function writeReports(db, reportsDir, config = {}, options = {}) {
   const json = JSON.stringify(data, null, 2);
 
   if (keepSnapshots) {
-    fs.writeFileSync(htmlPath, html, "utf8");
-    fs.writeFileSync(jsonPath, json, "utf8");
+    atomicWriteFile(htmlPath, html);
+    atomicWriteFile(jsonPath, json);
   }
   atomicWriteFile(latestHtml, html);
   atomicWriteFile(latestJson, json);
