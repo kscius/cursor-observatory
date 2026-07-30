@@ -19,6 +19,7 @@ import {
   isInjectedPrompt,
   detectSlashCommand,
   normalizeTs,
+  pickTs,
   pickNonBlankString,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
@@ -67,7 +68,22 @@ const badRawAudit = JSON.stringify({
   data: { raw: "not-json" },
 });
 const badEv = unwrapAuditEntry(JSON.parse(badRawAudit));
-assert.equal(badEv.eventType, "unknown");
+assert.equal(badEv, null);
+
+// Reject non-record wrappers / payloads instead of inventing "unknown" events
+for (const value of [null, undefined, 42, "x", false, [], [1], {}]) {
+  assert.equal(unwrapAuditEntry(value), null);
+}
+for (const raw of ["null", "[]", "42", "true", '"x"', "{}"]) {
+  assert.equal(unwrapAuditEntry({ data: { raw } }), null);
+}
+assert.equal(
+  unwrapAuditEntry({
+    timestamp: "2026-06-18T00:34:02.971Z",
+    data: { raw: JSON.stringify({ conversation_id: "no-event-name" }) },
+  }),
+  null
+);
 
 const innerEventAudit = {
   timestamp: "2026-06-18T00:34:02.971Z",
@@ -167,6 +183,12 @@ assert.equal(normalizeTs(null, "fallback-ts"), "fallback-ts");
 assert.equal(pickNonBlankString(" \t\n", " stop "), "stop");
 assert.equal(pickNonBlankString("", "   ", null, 1, "ok"), "ok");
 assert.equal(pickNonBlankString("", "  "), null);
+
+// pickTs: only finite numbers / non-blank strings (ignore bool/array/object blockers)
+assert.equal(pickTs("", null, "2026-07-01T00:00:00Z"), "2026-07-01T00:00:00Z");
+assert.equal(pickTs(false, 1718895600), 1718895600);
+assert.equal(pickTs([], {}, NaN, "  ", 42), 42);
+assert.equal(pickTs(null, undefined, ""), null);
 
 const blankHookEventAudit = unwrapAuditEntry({
   timestamp: "2026-06-18T00:34:02.971Z",
@@ -2410,7 +2432,15 @@ assert.ok(written.htmlPath && fs.existsSync(written.htmlPath));
 assert.ok(written.jsonPath && fs.existsSync(written.jsonPath));
 const html = fs.readFileSync(written.latestHtml, "utf8");
 assert.ok(html.includes("<!DOCTYPE html>"));
+assert.ok(html.includes("Agent tool usage and failure counts."));
+assert.ok(html.includes("Raw transcripts and hook logs stay on this machine"));
+assert.ok(html.includes("opt-in LLM coaching sends aggregated metrics"));
 assert.equal(fs.readdirSync(reportsDir).filter((f) => f.endsWith(".tmp")).length, 0);
+// Stamped report-* snapshots also use atomic writes (no leftover temps)
+assert.equal(
+  fs.readdirSync(reportsDir).filter((f) => f.includes(".tmp")).length,
+  0
+);
 
 // keepReportSnapshots: false writes only latest.* (watch mode)
 const latestOnlyDir = path.join(tmp, "reports-latest-only");
@@ -2846,6 +2876,66 @@ assert.equal(corruptSecond.inserted, 0);
 assert.equal(corruptSecond.skipped, 0);
 corruptDb.close();
 
+// Mapper/DB errors must not advance the JSONL checkpoint (avoid permanent skip)
+{
+  const dbFailDir = path.join(tmp, "hooks-db-fail", "logs");
+  fs.mkdirSync(dbFailDir, { recursive: true });
+  const dbFailAudit = path.join(dbFailDir, "agent-audit.jsonl");
+  const dbFailLine1 = JSON.stringify({
+    timestamp: "2026-06-20T12:00:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-db-fail-1",
+        hook_event_name: "stop",
+        model: "m",
+        input_tokens: 1,
+        output_tokens: 0,
+      }),
+    },
+  });
+  const dbFailLine2 = JSON.stringify({
+    timestamp: "2026-06-20T12:01:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-db-fail-2",
+        hook_event_name: "stop",
+        model: "m",
+        input_tokens: 2,
+        output_tokens: 0,
+      }),
+    },
+  });
+  fs.writeFileSync(dbFailAudit, dbFailLine1 + "\n");
+  const dbFailPath = path.join(tmp, "db-fail-checkpoint.db");
+  const dbFailDb = openDatabase(dbFailPath);
+  const dbFailFirst = ingestAuditLogs(dbFailDb, dbFailDir, false);
+  assert.equal(dbFailFirst.inserted, 1);
+  assert.equal(
+    dbFailDb.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(dbFailAudit)
+      .last_line,
+    1
+  );
+  fs.writeFileSync(dbFailAudit, dbFailLine1 + "\n" + dbFailLine2 + "\n");
+  dbFailDb.close();
+  const closedDb = openDatabase(dbFailPath);
+  closedDb.close();
+  assert.throws(() => ingestAuditLogs(closedDb, dbFailDir, false));
+  const reopened = openDatabase(dbFailPath);
+  assert.equal(
+    reopened.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(dbFailAudit)
+      .last_line,
+    1
+  );
+  const recovered = ingestAuditLogs(reopened, dbFailDir, false);
+  assert.equal(recovered.inserted, 1);
+  assert.equal(
+    reopened.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(dbFailAudit)
+      .last_line,
+    2
+  );
+  reopened.close();
+}
+
 // Client-side report helpers escape session detail / timeline values
 {
   const html = buildHtmlReport({
@@ -3241,7 +3331,16 @@ assert.throws(
   () => assertKnownFlags("status", ["--json"]),
   /Unknown flag for status: --json/
 );
+assert.throws(
+  () => assertKnownFlags("status", ["stray"]),
+  /Unexpected argument for status: stray/
+);
+assert.throws(
+  () => assertKnownFlags("watch", ["--interval", "5", "stray"]),
+  /Unexpected argument for watch: stray/
+);
 await assert.rejects(() => runCli(["dashboard", "--no-opeen"]), /Unknown flag for dashboard: --no-opeen/);
+await assert.rejects(() => runCli(["status", "stray"]), /Unexpected argument for status: stray/);
 
 // openFile attaches an error handler so a missing opener does not crash after report write
 {
@@ -3253,10 +3352,48 @@ await assert.rejects(() => runCli(["dashboard", "--no-opeen"]), /Unknown flag fo
 // --interval validation
 assert.equal(parseIntervalMs([]), 30000);
 assert.equal(parseIntervalMs(["--interval", "60"]), 60000);
+assert.equal(parseIntervalMs(["--interval", "2147483.647"]), 2147483647);
 assert.throws(() => parseIntervalMs(["--interval"]), /requires a positive number/);
 assert.throws(() => parseIntervalMs(["--interval", "0"]), /Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "-5"]), /requires a positive number|Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "abc"]), /Invalid --interval/);
+assert.throws(
+  () => parseIntervalMs(["--interval", "2147483.648"]),
+  /maximum 2147483\.647 seconds/
+);
+assert.throws(() => parseIntervalMs(["--interval", String(Number.MAX_VALUE)]), /maximum 2147483\.647 seconds/);
+
+// report --json prints only machine-readable paths (no human status lines)
+{
+  const reportJsonHome = path.join(tmp, "report-json-home");
+  const cursorHome = path.join(reportJsonHome, ".cursor");
+  const dataDir = path.join(cursorHome, "observatory");
+  fs.mkdirSync(path.join(dataDir, "reports"), { recursive: true });
+  fs.mkdirSync(path.join(cursorHome, "hooks", "logs"), { recursive: true });
+  fs.mkdirSync(path.join(cursorHome, "projects"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dataDir, "config.json"),
+    JSON.stringify({
+      cursorHome,
+      dataDir,
+      recommendations: { enabled: false, llm: { enabled: false } },
+      retention: { keepRawEventsDays: 0 },
+    })
+  );
+  const binPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "cursor-observatory.mjs");
+  const homeEnv = process.platform === "win32" ? "USERPROFILE" : "HOME";
+  const reportJsonRun = spawnSync(process.execPath, [binPath, "report", "--json"], {
+    encoding: "utf8",
+    env: { ...process.env, [homeEnv]: reportJsonHome },
+  });
+  assert.equal(reportJsonRun.status, 0, reportJsonRun.stderr);
+  const parsedPaths = JSON.parse(reportJsonRun.stdout);
+  assert.ok(parsedPaths.latestHtml);
+  assert.ok(parsedPaths.latestJson);
+  assert.equal(Object.keys(parsedPaths).sort().join(","), "htmlPath,jsonPath,latestHtml,latestJson");
+  assert.ok(!/Report HTML:/.test(reportJsonRun.stdout));
+  assert.ok(!/LLM recommendations/.test(reportJsonRun.stdout));
+}
 
 // Live agent-audit.jsonl rewrite: fewer lines with same/larger size still resets
 {

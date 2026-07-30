@@ -2,7 +2,7 @@
 
 Local analytics for **Cursor** — measure **how much**, **where**, and **how** you work with the agent across all projects on your machine.
 
-Privacy-first: ingestion, storage, scoring, and recommendations run locally. Your transcripts and hook logs are not uploaded by cursor-observatory. The generated HTML dashboard currently loads Google Fonts and Chart.js from public CDNs when opened in a browser.
+Privacy-first: ingestion, storage, scoring, and deterministic recommendations run locally. Your transcripts and hook logs are not uploaded by cursor-observatory. Opt-in LLM coaching sends only aggregated metrics to the configured OpenAI-compatible endpoint. The generated HTML dashboard loads Google Fonts and Chart.js from public CDNs when opened in a browser.
 
 Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (behavior) and your existing `~/.cursor/hooks` telemetry (volume).
 
@@ -47,7 +47,7 @@ node bin/cursor-observatory.mjs ingest --full   # clear checkpoints & re-parse t
 node bin/cursor-observatory.mjs ingest --no-rollup  # ingest only (faster)
 node bin/cursor-observatory.mjs rollup          # recompute aggregates only
 node bin/cursor-observatory.mjs report          # rollup + regenerate reports
-node bin/cursor-observatory.mjs report --json   # also print report paths as JSON
+node bin/cursor-observatory.mjs report --json   # print report paths as JSON only
 node bin/cursor-observatory.mjs report --with-llm # report + OpenAI coaching (needs API key)
 node bin/cursor-observatory.mjs dashboard       # ingest → retention → rollup → report → open browser
 node bin/cursor-observatory.mjs dashboard --full     # full rescan + refresh
@@ -128,7 +128,7 @@ Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/ob
 
 Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
 
-Config is resolved in this order: `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`, including `watch --with-llm`). Optional `recommendations.llm.baseUrl` for OpenAI-compatible endpoints (default `https://api.openai.com/v1`; only the OpenAI chat-completions shape is supported today). Use `recommendations.llm.timeoutMs` to cap each coaching request (default `30000`). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
+Config is resolved in this order (first existing file wins; files are not merged): `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`, including `watch --with-llm`). Override `recommendations.llm.baseUrl` for OpenAI-compatible endpoints (default `https://api.openai.com/v1`; only the OpenAI chat-completions shape is supported today — `provider` is reserved for cache keying). Use `recommendations.llm.timeoutMs` to cap each coaching request (default `30000`). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). Retention deletes aged rows from the SQLite DB (events and prompt previews), not source logs, transcripts, stamped reports, or the LLM cache. `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
 
 ## Recommendations (Guide cards)
 
