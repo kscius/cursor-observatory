@@ -126,11 +126,18 @@ async function main() {
     return;
   }
 
+  const conversationId = pickNonBlankString(payload.conversation_id, payload.session_id);
+  const transcriptPath = pickNonBlankString(
+    payload.transcript_path,
+    payload.agent_transcript_path
+  );
+  const prompt = pickNonBlankString(payload.prompt, payload.user_message);
+
   const entry = {
     // Blank `timestamp: ""` must fall through to `ts` (?? would keep "").
     ts: normalizeTs(pickTs(payload.timestamp, payload.ts)),
     hook_event_name: eventName,
-    conversation_id: payload.conversation_id || payload.session_id || null,
+    conversation_id: conversationId,
     generation_id: payload.generation_id || null,
     model: payload.model || null,
     input_tokens: payload.input_tokens ?? null,
@@ -138,19 +145,14 @@ async function main() {
     cache_read_tokens: payload.cache_read_tokens ?? null,
     cache_write_tokens: payload.cache_write_tokens ?? null,
     workspace_roots: Array.isArray(payload.workspace_roots) ? payload.workspace_roots : [],
-    transcript_path: payload.transcript_path || null,
+    transcript_path: transcriptPath,
     tool_name: payload.tool_name || null,
     command: payload.command || null,
     duration_ms: payload.duration_ms ?? null,
-    prompt:
-      typeof payload.prompt === "string"
-        ? payload.prompt.slice(0, 4000)
-        : typeof payload.user_message === "string"
-          ? payload.user_message.slice(0, 4000)
-          : null,
+    prompt: prompt ? prompt.slice(0, 4000) : null,
     composer_mode: payload.composer_mode || null,
     cursor_version: payload.cursor_version || null,
-    status: payload.status || payload.final_status || payload.reason || null,
+    status: pickNonBlankString(payload.status, payload.final_status, payload.reason),
     subagent_type: payload.subagent_type || null,
   };
 

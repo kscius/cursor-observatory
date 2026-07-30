@@ -68,10 +68,21 @@ function isUsableCachedEntry(entry) {
 }
 
 const DEFAULT_LLM_TIMEOUT_MS = 30_000;
+const MAX_LLM_TIMEOUT_MS = 120_000;
 
 function resolveTimeoutMs(config) {
   const n = Number(config?.timeoutMs);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_LLM_TIMEOUT_MS;
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_LLM_TIMEOUT_MS;
+  return Math.min(Math.floor(n), MAX_LLM_TIMEOUT_MS);
+}
+
+/** Strip trailing slashes so fetch URLs and cache keys stay consistent. */
+function resolveBaseUrl(config) {
+  const raw =
+    typeof config?.baseUrl === "string" && config.baseUrl.trim()
+      ? config.baseUrl.trim()
+      : "https://api.openai.com/v1";
+  return raw.replace(/\/+$/, "") || "https://api.openai.com/v1";
 }
 
 async function callOpenAI(config, userPrompt) {
@@ -82,7 +93,7 @@ async function callOpenAI(config, userPrompt) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${config.baseUrl || "https://api.openai.com/v1"}/chat/completions`, {
+    const res = await fetch(`${resolveBaseUrl(config)}/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -155,7 +166,7 @@ export async function enrichWithLlm(report, deterministic, config) {
     sessions: report.totals?.sessions,
   };
   const model = config.model || "gpt-4o-mini";
-  const baseUrl = config.baseUrl || "https://api.openai.com/v1";
+  const baseUrl = resolveBaseUrl(config);
   const provider = config.provider || "openai";
 
   const keys = config.sections || ["behavior", "overview", "usage", "sessions", "tools"];

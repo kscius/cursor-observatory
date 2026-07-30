@@ -125,9 +125,9 @@ function eventTs(outer) {
   return normalizeTs(pickTs(outer?.timestamp, outer?.ts));
 }
 
-/** Align with audit unwrap: status → final_status → reason. */
+/** Align with audit unwrap: status → final_status → reason (skip whitespace-only). */
 function eventStatus(outer, fallback = null) {
-  return outer?.status || outer?.final_status || outer?.reason || fallback;
+  return pickNonBlankString(outer?.status, outer?.final_status, outer?.reason) || fallback;
 }
 
 function auditToEvent(outer, sourceFile, sourceLine) {
@@ -146,7 +146,7 @@ function subagentToEvent(outer, sourceFile, sourceLine) {
   return {
     ts: eventTs(outer),
     eventType: pickNonBlankString(outer.event, outer.hook_event_name) || "subagentStop",
-    conversationId: outer.conversation_id || outer.session_id || null,
+    conversationId: pickNonBlankString(outer.conversation_id, outer.session_id),
     generationId: outer.generation_id || null,
     model: outer.model || null,
     project: null,
@@ -158,7 +158,7 @@ function subagentToEvent(outer, sourceFile, sourceLine) {
     toolName: null,
     command: null,
     durationMs: num(outer.duration_ms),
-    transcriptPath: outer.agent_transcript_path || null,
+    transcriptPath: pickNonBlankString(outer.agent_transcript_path, outer.transcript_path),
     cursorVersion: outer.cursor_version || null,
     composerMode: null,
     promptPreview: String(outer.task || outer.description || "").slice(0, 300),
@@ -175,7 +175,7 @@ function sessionSummaryToEvent(outer, sourceFile, sourceLine) {
     ts: eventTs(outer),
     eventType: "sessionEnd",
     // Collector/hooks may emit session_id instead of conversation_id.
-    conversationId: outer.conversation_id || outer.session_id || null,
+    conversationId: pickNonBlankString(outer.conversation_id, outer.session_id),
     generationId: outer.generation_id || null,
     model: null,
     project: null,
@@ -230,7 +230,8 @@ export function ingestToolFailures(db, hooksLogsDir) {
   return ingestJsonlFile(db, f, (outer, sourceFile, sourceLine) => ({
     ts: eventTs(outer),
     eventType: "toolFailure",
-    conversationId: outer.conversation_id || null,
+    // Match other secondary logs: session_id is an accepted conversation alias.
+    conversationId: pickNonBlankString(outer.conversation_id, outer.session_id),
     generationId: outer.generation_id || null,
     model: outer.model || null,
     project: null,
@@ -371,11 +372,15 @@ export function ingestHookEvents(db, dataDir) {
     const eventName = pickNonBlankString(outer.hook_event_name, outer.event);
     if (!eventName) return null;
     const roots = Array.isArray(outer.workspace_roots) ? outer.workspace_roots : [];
-    const prompt = outer.prompt || outer.user_message || null;
+    const prompt = pickNonBlankString(outer.prompt, outer.user_message);
+    const transcriptPath = pickNonBlankString(
+      outer.transcript_path,
+      outer.agent_transcript_path
+    );
     const ev = {
       ts: eventTs(outer),
       eventType: eventName,
-      conversationId: outer.conversation_id || outer.session_id || null,
+      conversationId: pickNonBlankString(outer.conversation_id, outer.session_id),
       generationId: outer.generation_id || null,
       model: outer.model || null,
       workspaceRoots: roots,
@@ -386,11 +391,11 @@ export function ingestHookEvents(db, dataDir) {
       toolName: outer.tool_name || null,
       command: outer.command || null,
       durationMs: num(outer.duration_ms),
-      transcriptPath: outer.transcript_path || null,
+      transcriptPath,
       cursorVersion: outer.cursor_version || null,
       composerMode: outer.composer_mode || null,
       prompt,
-      project: primaryWorkspace(roots) || projectFromTranscriptPath(outer.transcript_path),
+      project: primaryWorkspace(roots) || projectFromTranscriptPath(transcriptPath),
     };
     return {
       ...ev,

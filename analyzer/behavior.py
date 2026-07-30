@@ -66,7 +66,16 @@ def main() -> int:
         prompts = data
     elif isinstance(data, dict):
         raw = data.get("prompts", [])
-        prompts = raw if isinstance(raw, list) else []
+        if raw is None:
+            prompts = []
+        elif isinstance(raw, list):
+            prompts = raw
+        else:
+            print(
+                f"error: prompts must be a JSON list in {path}, got {type(raw).__name__}",
+                file=sys.stderr,
+            )
+            return 1
     else:
         print(
             f"error: expected a JSON list or object in {path}, got {type(data).__name__}",
