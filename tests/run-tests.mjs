@@ -28,7 +28,7 @@ import { runAllRollups, rollupBehavior, rollupSessions } from "../src/aggregate.
 import { buildJsonReport, buildFullReport, buildSessionEventMap, writeReports, buildHtmlReport } from "../src/report.mjs";
 import { buildDeterministicRecommendations, mergeLlmRecommendations } from "../src/recommend.mjs";
 import { enrichWithLlm } from "../src/llm.mjs";
-import { expandHome, loadConfig } from "../src/config.mjs";
+import { expandHome, loadConfig, normalizeLlmBaseUrl } from "../src/config.mjs";
 import { applyRetention } from "../src/retention.mjs";
 import { runCli, parseIntervalMs, assertKnownFlags, openFile } from "../src/cli.mjs";
 import { startWatch } from "../src/watch.mjs";
@@ -266,6 +266,10 @@ const home = os.homedir();
 assert.equal(expandHome("~"), home);
 assert.equal(expandHome("~/observatory"), path.join(home, "observatory"));
 assert.equal(expandHome(null), null);
+assert.equal(normalizeLlmBaseUrl("https://api.openai.com/v1/"), "https://api.openai.com/v1");
+assert.equal(normalizeLlmBaseUrl("  https://example.invalid/v1///  "), "https://example.invalid/v1");
+assert.equal(normalizeLlmBaseUrl(""), "https://api.openai.com/v1");
+assert.equal(normalizeLlmBaseUrl(null), "https://api.openai.com/v1");
 
 const sampleAudit = JSON.stringify({
   timestamp: "2026-06-18T00:34:02.971Z",
@@ -1206,6 +1210,58 @@ aliasDb.close();
   sidDb.close();
 }
 
+// tool-failures: session_id alias + blank conversation_id fallthrough
+{
+  const toolFailHooksDir = path.join(tmp, "tool-fail-sid-hooks", "logs");
+  fs.mkdirSync(toolFailHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(toolFailHooksDir, "tool-failures.jsonl"),
+    [
+      JSON.stringify({
+        ts: "2026-06-21T13:20:00.000Z",
+        session_id: "conv-tool-session-id",
+        tool_name: "Shell",
+        error: "timeout",
+      }),
+      JSON.stringify({
+        ts: "2026-06-21T13:21:00.000Z",
+        conversation_id: "   ",
+        session_id: "conv-tool-blank-cid",
+        tool_name: "Read",
+        error: "enoent",
+        status: "  ",
+        final_status: "failed",
+      }),
+    ].join("\n") + "\n"
+  );
+  const toolFailDb = openDatabase(path.join(tmp, "tool-fail-sid.db"));
+  const toolFailSummary = ingestAll(toolFailDb, {
+    cursorHome: path.join(tmp, "tool-fail-sid-hooks"),
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: toolFailHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: true,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(toolFailSummary.tools.inserted, 2);
+  const toolFailRows = toolFailDb
+    .prepare("SELECT conversation_id, tool_name, status FROM events ORDER BY id")
+    .all();
+  assert.equal(toolFailRows[0].conversation_id, "conv-tool-session-id");
+  assert.equal(toolFailRows[0].status, "failed");
+  assert.equal(toolFailRows[1].conversation_id, "conv-tool-blank-cid");
+  assert.equal(toolFailRows[1].tool_name, "Read");
+  assert.equal(toolFailRows[1].status, "failed");
+  toolFailDb.close();
+}
+
 // subagent-audit preserves conversation_id and session_id aliases
 {
   const subagentIdHooksDir = path.join(tmp, "subagent-id-hooks", "logs");
@@ -1349,6 +1405,35 @@ assert.equal(
   "user_close"
 );
 
+// Hook events: blank conversation_id → session_id; agent_transcript_path alias; whitespace status
+{
+  const hookBlankCidLine = JSON.stringify({
+    ts: "2026-06-20T15:30:00.000Z",
+    hook_event_name: "stop",
+    conversation_id: "   ",
+    session_id: "conv-hook-blank-cid",
+    prompt: "  ",
+    user_message: "real prompt text",
+    agent_transcript_path: "/c:/Development/HookProject/agent-transcripts/abc.jsonl",
+    status: "\t",
+    final_status: "completed",
+  });
+  fs.appendFileSync(path.join(hookEventsDir, "hook-events.jsonl"), hookBlankCidLine + "\n");
+  const blankCidSummary = ingestAll(hookDb, hookConfig);
+  assert.equal(blankCidSummary.hookEvents.inserted, 1);
+  const blankCidRow = hookDb
+    .prepare(
+      "SELECT conversation_id, prompt_preview, transcript_path, status FROM events WHERE conversation_id = ?"
+    )
+    .get("conv-hook-blank-cid");
+  assert.equal(blankCidRow.prompt_preview, "real prompt text");
+  assert.equal(
+    blankCidRow.transcript_path,
+    "/c:/Development/HookProject/agent-transcripts/abc.jsonl"
+  );
+  assert.equal(blankCidRow.status, "completed");
+}
+
 // Hook events: skip rows without a usable event name (do not invent "unknown")
 {
   const before = hookDb.prepare("SELECT COUNT(*) AS n FROM events").get().n;
@@ -1407,6 +1492,22 @@ if (!fs.existsSync(userConfigPath)) {
       "sessions",
       "tools",
     ]);
+
+    // Cap huge LLM timeouts; coerce non-string / blank path fields to defaults
+    fs.writeFileSync(
+      repoConfigPath,
+      JSON.stringify({
+        cursorHome: "   ",
+        dataDir: 123,
+        recommendations: { llm: { timeoutMs: 999_999_999, baseUrl: "https://example.invalid/v1/" } },
+      })
+    );
+    const cappedCfg = loadConfig();
+    assert.equal(cappedCfg.recommendations.llm.timeoutMs, 120_000);
+    assert.equal(cappedCfg.recommendations.llm.baseUrl, "https://example.invalid/v1");
+    assert.equal(cappedCfg.cursorHome, path.join(home, ".cursor"));
+    assert.ok(typeof cappedCfg.dataDir === "string");
+    assert.ok(cappedCfg.dataDir.includes("observatory"));
   } finally {
     if (hadRepoConfig) fs.writeFileSync(repoConfigPath, savedRepoConfig);
     else if (fs.existsSync(repoConfigPath)) fs.unlinkSync(repoConfigPath);
@@ -2143,6 +2244,20 @@ multiModelPromptDb.close();
     });
     assert.equal(fetchCalls, 2, "changed baseUrl must miss cache");
     assert.match(outAlt.sections.overview.llmSummary, /example\.invalid/);
+
+    // Trailing slash must not create a double-slash URL or a separate cache key
+    const outSlash = await enrichWithLlm(llmReport, llmDet, {
+      enabled: true,
+      apiKeyEnv: "OPENAI_API_KEY",
+      useCache: true,
+      cacheDir: cacheRoot,
+      baseUrl: "https://example.invalid/v1/",
+      sections: ["overview"],
+    });
+    assert.equal(fetchCalls, 2, "trailing-slash baseUrl must hit same cache entry");
+    assert.match(outSlash.sections.overview.llmSummary, /example\.invalid/);
+    assert.match(lastUrl, /https:\/\/example\.invalid\/v1\/chat\/completions/);
+    assert.ok(!lastUrl.includes("/v1//"), "fetch URL must not double-slash after baseUrl");
   } finally {
     globalThis.fetch = origFetch;
     if (savedApiKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -2528,6 +2643,31 @@ const collectorBlankNameAliasEntry = JSON.parse(
 assert.equal(collectorBlankNameAliasEntry.hook_event_name, "stop");
 assert.equal(collectorBlankNameAliasEntry.conversation_id, "conv-collector-blank-name");
 assert.equal(collectorBlankNameAliasEntry.ts, "2026-06-20T17:45:00.000Z");
+
+// Collector: blank conversation_id → session_id; agent_transcript_path; blank prompt/status aliases
+const collectorBlankAliases = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({
+    hook_event_name: "stop",
+    conversation_id: "   ",
+    session_id: "conv-collector-blank-cid",
+    timestamp: "2026-06-20T18:00:00.000Z",
+    prompt: "\t",
+    user_message: "from user_message",
+    agent_transcript_path: "/tmp/agent-transcripts/x.jsonl",
+    status: "  ",
+    final_status: "completed",
+  }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorBlankAliases.status, 0);
+const collectorBlankAliasesEntry = JSON.parse(
+  fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
+);
+assert.equal(collectorBlankAliasesEntry.conversation_id, "conv-collector-blank-cid");
+assert.equal(collectorBlankAliasesEntry.prompt, "from user_message");
+assert.equal(collectorBlankAliasesEntry.transcript_path, "/tmp/agent-transcripts/x.jsonl");
+assert.equal(collectorBlankAliasesEntry.status, "completed");
 
 // Collector: cursorHome-only config derives <cursorHome>/observatory/events (matches loadConfig)
 {
@@ -2946,6 +3086,13 @@ corruptDb.close();
   assert.notEqual(scalar.status, 0);
   assert.match(scalar.stderr, /error: expected a JSON list or object/i);
   assert.ok(!scalar.stderr.includes("Traceback"));
+
+  const badPromptsType = path.join(tmp, "bad-prompts-type.json");
+  fs.writeFileSync(badPromptsType, JSON.stringify({ prompts: "fix the bug" }));
+  const badType = spawnSync("python3", [behaviorPy, badPromptsType], { encoding: "utf8" });
+  assert.notEqual(badType.status, 0);
+  assert.match(badType.stderr, /error: prompts must be a JSON list/i);
+  assert.ok(!badType.stderr.includes("Traceback"));
 }
 
 // topTools must not count toolFailure rows as uses
