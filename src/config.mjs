@@ -16,11 +16,20 @@ function normalizeRetentionDays(value) {
 }
 
 const DEFAULT_LLM_TIMEOUT_MS = 30_000;
+/** Cap LLM request timeouts to a sane upper bound (2 minutes). */
+const MAX_LLM_TIMEOUT_MS = 120_000;
 
 function normalizeLlmTimeoutMs(value) {
   if (value === undefined || value === null || value === "") return DEFAULT_LLM_TIMEOUT_MS;
   const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_LLM_TIMEOUT_MS;
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_LLM_TIMEOUT_MS;
+  return Math.min(Math.floor(n), MAX_LLM_TIMEOUT_MS);
+}
+
+/** Prefer a non-blank string path; otherwise use fallback (may still be expanded). */
+function normalizeConfigPath(value, fallback) {
+  const selected = typeof value === "string" && value.trim() ? value.trim() : fallback;
+  return expandHome(selected);
 }
 
 export function expandHome(p) {
@@ -30,6 +39,13 @@ export function expandHome(p) {
     return path.join(os.homedir(), p.slice(2));
   }
   return p;
+}
+
+/** Strip trailing slashes so cache keys and fetch URLs stay consistent. */
+export function normalizeLlmBaseUrl(value) {
+  const raw =
+    typeof value === "string" && value.trim() ? value.trim() : "https://api.openai.com/v1";
+  return raw.replace(/\/+$/, "") || "https://api.openai.com/v1";
 }
 
 export function loadConfig() {
@@ -62,15 +78,15 @@ export function loadConfig() {
     break;
   }
 
-  const cursorHome = expandHome(raw.cursorHome || "~/.cursor");
-  const dataDir = expandHome(raw.dataDir || path.join(cursorHome, "observatory"));
+  const cursorHome = normalizeConfigPath(raw.cursorHome, "~/.cursor");
+  const dataDir = normalizeConfigPath(raw.dataDir, path.join(cursorHome, "observatory"));
 
   return {
     cursorHome,
     dataDir,
-    dbPath: expandHome(raw.dbPath || path.join(dataDir, "observatory.db")),
-    reportsDir: expandHome(raw.reportsDir || path.join(dataDir, "reports")),
-    archiveDir: expandHome(raw.archiveDir || path.join(dataDir, "archive")),
+    dbPath: normalizeConfigPath(raw.dbPath, path.join(dataDir, "observatory.db")),
+    reportsDir: normalizeConfigPath(raw.reportsDir, path.join(dataDir, "reports")),
+    archiveDir: normalizeConfigPath(raw.archiveDir, path.join(dataDir, "archive")),
     projectsDir: path.join(cursorHome, "projects"),
     hooksLogsDir: path.join(cursorHome, "hooks", "logs"),
     ingest: {
@@ -93,7 +109,7 @@ export function loadConfig() {
         provider: raw.recommendations?.llm?.provider || "openai",
         model: raw.recommendations?.llm?.model || "gpt-4o-mini",
         apiKeyEnv: raw.recommendations?.llm?.apiKeyEnv || "OPENAI_API_KEY",
-        baseUrl: raw.recommendations?.llm?.baseUrl || "https://api.openai.com/v1",
+        baseUrl: normalizeLlmBaseUrl(raw.recommendations?.llm?.baseUrl),
         timeoutMs: normalizeLlmTimeoutMs(raw.recommendations?.llm?.timeoutMs),
         useCache: raw.recommendations?.llm?.useCache !== false,
         sections: normalizeLlmSections(raw.recommendations?.llm?.sections),
