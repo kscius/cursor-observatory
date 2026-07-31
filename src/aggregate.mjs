@@ -20,7 +20,11 @@ export function rollupSessions(db) {
       SUM(CASE WHEN event_type IN ('preToolUse','postToolUse','afterShellExecution') THEN 1 ELSE 0 END) AS tool_count,
       CASE
         WHEN SUM(CASE WHEN event_type = 'sessionEnd' THEN 1 ELSE 0 END) > 0
-        THEN SUM(CASE WHEN event_type = 'sessionEnd' THEN COALESCE(duration_ms, 0) ELSE 0 END)
+        -- Duplicate sessionEnd rows must not inflate duration (use max, not sum).
+        THEN COALESCE(
+          MAX(CASE WHEN event_type = 'sessionEnd' THEN duration_ms ELSE NULL END),
+          0
+        )
         ELSE NULL
       END AS duration_ms,
       SUM(CASE WHEN event_type = 'subagentStop' OR subagent_type IS NOT NULL THEN 1 ELSE 0 END) AS subagent_count
