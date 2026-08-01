@@ -113,7 +113,7 @@ export function rollupTimeBuckets(db) {
       SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(input_tokens,0) ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(output_tokens,0) ELSE 0 END),
-      COUNT(DISTINCT NULLIF(conversation_id, ''))
+      COUNT(DISTINCT CASE WHEN event_type = 'stop' THEN NULLIF(conversation_id, '') END)
     FROM events
     WHERE ts IS NOT NULL
     GROUP BY hour_key, COALESCE(project,''), COALESCE(model,'')
@@ -129,7 +129,7 @@ export function rollupTimeBuckets(db) {
       SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(input_tokens,0) ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(output_tokens,0) ELSE 0 END),
-      COUNT(DISTINCT NULLIF(conversation_id, '')),
+      COUNT(DISTINCT CASE WHEN event_type = 'stop' THEN NULLIF(conversation_id, '') END),
       0
     FROM events
     WHERE ts IS NOT NULL
