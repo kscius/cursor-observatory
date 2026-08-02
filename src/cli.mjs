@@ -127,8 +127,8 @@ export async function runCli(argv) {
         (SELECT COUNT(DISTINCT NULLIF(conversation_id, '')) FROM events) AS sessions,
         (SELECT COUNT(*) FROM prompts) AS prompts,
         (SELECT COUNT(*) FROM transcripts) AS transcripts,
-        (SELECT SUM(CASE WHEN event_type='toolFailure' THEN 1 ELSE 0 END) FROM events) AS tool_failures,
-        (SELECT SUM(CASE WHEN event_type='stop' THEN COALESCE(cache_read_tokens,0) ELSE 0 END) FROM events) AS cache_read`
+        (SELECT COALESCE(SUM(CASE WHEN event_type='toolFailure' THEN 1 ELSE 0 END), 0) FROM events) AS tool_failures,
+        (SELECT COALESCE(SUM(CASE WHEN event_type='stop' THEN COALESCE(cache_read_tokens,0) ELSE 0 END), 0) FROM events) AS cache_read`
     );
     console.log("Cursor Observatory status");
     console.log(`  DB: ${config.dbPath}`);

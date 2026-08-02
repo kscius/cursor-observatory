@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripBom } from "./parse.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -65,7 +66,7 @@ export function loadConfig() {
       throw new Error(`Cannot read config file ${file}: ${err.message}`);
     }
     try {
-      raw = JSON.parse(text);
+      raw = JSON.parse(stripBom(text));
     } catch (err) {
       if (err instanceof SyntaxError) {
         throw new Error(`Invalid JSON in config file ${file}: ${err.message}`);

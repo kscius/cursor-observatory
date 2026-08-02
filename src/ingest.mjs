@@ -15,6 +15,7 @@ import {
   parseTranscriptRecords,
   primaryWorkspace,
   projectFromTranscriptPath,
+  normalizeWorkspaceRoots,
   stripBom,
   unwrapAuditEntry,
   normalizeTs,
@@ -145,7 +146,7 @@ function auditToEvent(outer, sourceFile, sourceLine) {
 function subagentToEvent(outer, sourceFile, sourceLine) {
   return {
     ts: eventTs(outer),
-    eventType: pickNonBlankString(outer.event, outer.hook_event_name) || "subagentStop",
+    eventType: pickNonBlankString(outer.hook_event_name, outer.event) || "subagentStop",
     conversationId: pickNonBlankString(outer.conversation_id, outer.session_id),
     generationId: outer.generation_id || null,
     model: outer.model || null,
@@ -371,7 +372,7 @@ export function ingestHookEvents(db, dataDir) {
     // Blank/whitespace hook_event_name must fall through to event alias.
     const eventName = pickNonBlankString(outer.hook_event_name, outer.event);
     if (!eventName) return null;
-    const roots = Array.isArray(outer.workspace_roots) ? outer.workspace_roots : [];
+    const roots = normalizeWorkspaceRoots(outer.workspace_roots);
     const prompt = pickNonBlankString(outer.prompt, outer.user_message);
     const transcriptPath = pickNonBlankString(
       outer.transcript_path,
