@@ -35,7 +35,7 @@ function resolveLogDir() {
   const configPath = path.join(home, ".cursor", "observatory", "config.json");
   try {
     if (fs.existsSync(configPath)) {
-      const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const raw = JSON.parse(fs.readFileSync(configPath, "utf8").replace(/^\uFEFF/, ""));
       if (raw && typeof raw.dataDir === "string" && raw.dataDir.trim()) {
         return path.join(expandHome(raw.dataDir), "events");
       }

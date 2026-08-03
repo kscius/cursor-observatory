@@ -681,6 +681,42 @@ const stopSessions = rollupDb
   .get().n;
 assert.equal(allTimeSessions, stopSessions);
 assert.ok(allTimeSessions >= 2); // at least rollupConv + modelNoiseConv (+ zeroDur)
+assert.equal(
+  rollupDb.prepare("SELECT COUNT(*) AS n FROM sessions WHERE conversation_id = ?").get("tool-only-conv").n,
+  0,
+  "tool-only conversations must not appear in sessions rollup"
+);
+
+// subagent_count counts subagentStop events only (not stop rows with subagent_type set)
+const subagentCountConv = "conv-subagent-count";
+insertEvent.run(
+  "2026-06-20T15:00:00.000Z",
+  "stop",
+  subagentCountConv,
+  "model-a",
+  1,
+  1,
+  null,
+  "r-sub.jsonl",
+  1
+);
+insertEvent.run(
+  "2026-06-20T15:01:00.000Z",
+  "subagentStop",
+  subagentCountConv,
+  null,
+  null,
+  null,
+  null,
+  "r-sub.jsonl",
+  2
+);
+rollupSessions(rollupDb);
+assert.equal(
+  rollupDb.prepare("SELECT subagent_count FROM sessions WHERE conversation_id = ?").get(subagentCountConv)
+    .subagent_count,
+  1
+);
 rollupDb.close();
 
 // Retention: prune events older than N days
@@ -903,6 +939,47 @@ assert.ok(
     .preview.includes("updated prompt after mtime")
 );
 mtimeChangeDb.close();
+
+// Transcript ingest: BOM-only lines must not inflate line_count metadata
+{
+  const bomLineDir = path.join(
+    tmp,
+    "projects",
+    "c-Development-BomLine",
+    "agent-transcripts",
+    "conv-bom-line"
+  );
+  fs.mkdirSync(bomLineDir, { recursive: true });
+  const bomLinePath = path.join(bomLineDir, "conv-bom-line.jsonl");
+  fs.writeFileSync(
+    bomLinePath,
+    `\uFEFF   \n${JSON.stringify({
+      role: "user",
+      message: { content: [{ type: "text", text: "<user_query>\nbom line count\n</user_query>" }] },
+    })}\n`
+  );
+  const bomLineDb = openDatabase(path.join(tmp, "transcript-bom-line.db"));
+  ingestAll(bomLineDb, {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory-bom-line"),
+    hooksLogsDir: hooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: true,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(
+    bomLineDb.prepare("SELECT line_count FROM transcripts WHERE path = ?").get(bomLinePath).line_count,
+    1
+  );
+  bomLineDb.close();
+}
 
 // Transcript re-ingest: same mtime but changed size re-parses
 const sameMtimeProjectsDir = path.join(tmp, "projects-same-mtime");
@@ -1330,6 +1407,99 @@ aliasDb.close();
     .map((r) => r.conversation_id);
   assert.deepEqual(subagentIds, ["conv-subagent-conversation", "conv-subagent-session"]);
   subagentIdDb.close();
+}
+
+// subagent-audit: transcript_path alias order, project attribution, preview alias fallthrough
+{
+  const subagentMetaHooksDir = path.join(tmp, "subagent-meta-hooks", "logs");
+  fs.mkdirSync(subagentMetaHooksDir, { recursive: true });
+  const subagentTranscript = path.join(
+    tmp,
+    "projects",
+    "c-Users-dev-myapp",
+    "agent-transcripts",
+    "conv-subagent-meta.jsonl"
+  );
+  fs.mkdirSync(path.dirname(subagentTranscript), { recursive: true });
+  fs.writeFileSync(subagentTranscript, "\n");
+  fs.writeFileSync(
+    path.join(subagentMetaHooksDir, "subagent-audit.jsonl"),
+    [
+      JSON.stringify({
+        timestamp: "2026-06-21T11:00:00.000Z",
+        event: "subagentStop",
+        conversation_id: "conv-subagent-meta",
+        transcript_path: subagentTranscript,
+        agent_transcript_path: "/ignored/other.jsonl",
+        task: "   ",
+        description: "search auth handlers",
+        subagent_type: "explore",
+      }),
+    ].join("\n") + "\n"
+  );
+  const subagentMetaDb = openDatabase(path.join(tmp, "subagent-meta.db"));
+  const subagentMetaSummary = ingestAll(subagentMetaDb, {
+    cursorHome: path.join(tmp, "subagent-meta-hooks"),
+    dataDir: path.join(tmp, "observatory-subagent-meta"),
+    hooksLogsDir: subagentMetaHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: true,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(subagentMetaSummary.subagent.inserted, 1);
+  const subagentMetaRow = subagentMetaDb
+    .prepare("SELECT project, prompt_preview, transcript_path FROM events WHERE conversation_id = ?")
+    .get("conv-subagent-meta");
+  assert.equal(subagentMetaRow.project, `C:${path.sep}Users${path.sep}dev${path.sep}myapp`);
+  assert.equal(subagentMetaRow.transcript_path, subagentTranscript);
+  assert.equal(subagentMetaRow.prompt_preview, "search auth handlers");
+  subagentMetaDb.close();
+}
+
+// tool-failures: whitespace-only error must fall through to message
+{
+  const toolPreviewHooksDir = path.join(tmp, "tool-preview-hooks", "logs");
+  fs.mkdirSync(toolPreviewHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(toolPreviewHooksDir, "tool-failures.jsonl"),
+    JSON.stringify({
+      timestamp: "2026-06-21T11:05:00.000Z",
+      conversation_id: "conv-tool-preview",
+      tool_name: "Shell",
+      error: "   ",
+      message: "command not found",
+    }) + "\n"
+  );
+  const toolPreviewDb = openDatabase(path.join(tmp, "tool-preview.db"));
+  ingestAll(toolPreviewDb, {
+    cursorHome: path.join(tmp, "tool-preview-hooks"),
+    dataDir: path.join(tmp, "observatory-tool-preview"),
+    hooksLogsDir: toolPreviewHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: true,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(
+    toolPreviewDb
+      .prepare("SELECT prompt_preview FROM events WHERE conversation_id = ?")
+      .get("conv-tool-preview").prompt_preview,
+    "command not found"
+  );
+  toolPreviewDb.close();
 }
 
 // Hook events ingest: collector stream at dataDir/events/hook-events.jsonl
@@ -2731,6 +2901,41 @@ assert.equal(collectorBlankAliasesEntry.status, "completed");
   assert.equal(cursorHomeEntry.conversation_id, "conv-cursor-home");
 }
 
+// Collector: BOM-prefixed config.json must still resolve custom dataDir
+{
+  const fakeHome = path.join(tmp, "collector-bom-home");
+  const customDataDir = path.join(tmp, "collector-bom-data");
+  const cfgDir = path.join(fakeHome, ".cursor", "observatory");
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(cfgDir, "config.json"),
+    "\uFEFF" + JSON.stringify({ dataDir: customDataDir })
+  );
+  const homeEnv = process.platform === "win32" ? "USERPROFILE" : "HOME";
+  const collectorBomEnv = {
+    ...process.env,
+    [homeEnv]: fakeHome,
+    HOME: fakeHome,
+    USERPROFILE: fakeHome,
+  };
+  delete collectorBomEnv.OBSERVATORY_DATA_DIR;
+  const collectorBom = spawnSync(process.execPath, [collectorScript], {
+    input: JSON.stringify({
+      event: "stop",
+      session_id: "conv-bom-config",
+      timestamp: "2026-06-20T16:30:00.000Z",
+      model: "bom-config-model",
+    }),
+    encoding: "utf8",
+    env: collectorBomEnv,
+  });
+  assert.equal(collectorBom.status, 0, collectorBom.stderr || collectorBom.stdout);
+  const bomLog = path.join(customDataDir, "events", "hook-events.jsonl");
+  assert.ok(fs.existsSync(bomLog), "collector must honor BOM-prefixed config dataDir");
+  const bomEntry = JSON.parse(fs.readFileSync(bomLog, "utf8").trim().split("\n").pop());
+  assert.equal(bomEntry.conversation_id, "conv-bom-config");
+}
+
 // Watch smoke: refresh once, stop cleanly, no overlapping onRefresh
 const watchDb = openDatabase(path.join(tmp, "watch.db"));
 const watchHooks = path.join(tmp, "watch-hooks");
@@ -3449,6 +3654,52 @@ corruptDb.close();
   assert.equal(reportSessions, 2);
   assert.equal(queryScalar(statusDb, `SELECT COUNT(*) AS n FROM sessions`).n, 0);
   statusDb.close();
+}
+
+// status behavior query must target all-time / all snapshot (not arbitrary period_key)
+{
+  const behaviorDb = openDatabase(path.join(tmp, "status-behavior.db"));
+  behaviorDb
+    .prepare(
+      `INSERT INTO behavior_snapshots (period, period_key, fluency_score, archetype, real_prompt_count, session_count, computed_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+    )
+    .run("all-time", "stale", 10, "stale", 1, 0);
+  behaviorDb
+    .prepare(
+      `INSERT INTO behavior_snapshots (period, period_key, fluency_score, archetype, real_prompt_count, session_count, computed_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+    )
+    .run("all-time", "all", 88, "power_user", 42, 5);
+  const statusBehavior = queryScalar(
+    behaviorDb,
+    `SELECT fluency_score, archetype, real_prompt_count FROM behavior_snapshots WHERE period='all-time' AND period_key='all'`
+  );
+  assert.equal(statusBehavior.fluency_score, 88);
+  assert.equal(statusBehavior.archetype, "power_user");
+  assert.equal(statusBehavior.real_prompt_count, 42);
+  behaviorDb.close();
+}
+
+// topModels query is capped to keep report payloads bounded
+{
+  const topModelsDb = openDatabase(path.join(tmp, "top-models-cap.db"));
+  const topModelsInsert = topModelsDb.prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, model, input_tokens, output_tokens, source_file, source_line)
+     VALUES (?, 'stop', ?, ?, ?, 1, ?, ?)`
+  );
+  for (let i = 0; i < 25; i++) {
+    topModelsInsert.run(
+      `2026-06-22T10:${String(i).padStart(2, "0")}:00.000Z`,
+      `conv-top-model-${i}`,
+      `model-${i}`,
+      1000 - i,
+      "top-models.jsonl",
+      i + 1
+    );
+  }
+  assert.equal(buildJsonReport(topModelsDb).topModels.length, 20);
+  topModelsDb.close();
 }
 
 // CLI smoke tests
