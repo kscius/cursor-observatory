@@ -60,6 +60,15 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm 
   const debounced = debounce(refresh, 2000);
   const watchers = [];
 
+  const attachWatcher = (w, dir) => {
+    // Runtime watcher errors (e.g. EMFILE, deleted dir) must not crash the process;
+    // interval refresh continues to cover missed file events.
+    w.on("error", (err) => {
+      console.warn(`[watch] fs.watch error for ${dir}:`, err.message || err);
+    });
+    watchers.push(w);
+  };
+
   const watchDir = (dir, { ensure = false } = {}) => {
     if (ensure) {
       try {
@@ -70,13 +79,11 @@ export function startWatch(config, db, { intervalMs = 30000, onRefresh, withLlm 
     }
     if (!fs.existsSync(dir)) return;
     try {
-      const w = fs.watch(dir, { recursive: true }, debounced);
-      watchers.push(w);
+      attachWatcher(fs.watch(dir, { recursive: true }, debounced), dir);
     } catch {
       /* non-recursive fallback on some platforms; interval refresh still runs if both fail */
       try {
-        const w = fs.watch(dir, debounced);
-        watchers.push(w);
+        attachWatcher(fs.watch(dir, debounced), dir);
       } catch (err) {
         console.warn(
           `[watch] fs.watch unavailable for ${dir}; using interval only:`,

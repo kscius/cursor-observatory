@@ -32,8 +32,18 @@ function countCompleteLines(content) {
   return n;
 }
 
+/** True when every JSONL record is newline-terminated (ignore trailing whitespace). */
+function hasCompleteTrailingLine(content) {
+  if (content.endsWith("\n")) return true;
+  const lastNl = content.lastIndexOf("\n");
+  // No newline at all → single incomplete (or unterminated) physical line.
+  if (lastNl === -1) return false;
+  // Whitespace after the final newline is not a mid-append partial JSON record.
+  return !content.slice(lastNl + 1).trim();
+}
+
 function* readLinesFromContent(content, startLine = 0) {
-  const endsWithNewline = content.endsWith("\n");
+  const completeTrailing = hasCompleteTrailingLine(content);
   const lines = content.split(/\r?\n/);
   let lastNonEmptyIndex = -1;
   for (let i = startLine; i < lines.length; i++) {
@@ -46,7 +56,7 @@ function* readLinesFromContent(content, startLine = 0) {
       line,
       lineNo: i + 1,
       // Incomplete trailing write (collector mid-append) — do not checkpoint past it.
-      isTrailingPartialLine: !endsWithNewline && i === lastNonEmptyIndex,
+      isTrailingPartialLine: !completeTrailing && i === lastNonEmptyIndex,
     };
   }
 }

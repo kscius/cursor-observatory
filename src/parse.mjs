@@ -128,16 +128,30 @@ export function unwrapAuditEntry(outer) {
     pickTs(outer.timestamp, inner.timestamp, outer.ts, inner.ts)
   );
   const workspaceRoots = Array.isArray(inner.workspace_roots) ? inner.workspace_roots : [];
+  // Mirror collector/secondary ingest: whitespace-only values fall through to aliases.
+  const conversationId = pickNonBlankString(
+    inner.conversation_id,
+    inner.session_id,
+    outer.conversation_id,
+    outer.session_id
+  );
+  const status = pickNonBlankString(inner.status, inner.final_status, inner.reason);
+  const transcriptPath = pickNonBlankString(
+    inner.transcript_path,
+    inner.agent_transcript_path,
+    outer.transcript_path,
+    outer.agent_transcript_path
+  );
+  const prompt = pickNonBlankString(inner.prompt, inner.user_message);
 
   return {
     ts,
     eventType,
-    conversationId:
-      inner.conversation_id || inner.session_id || outer.conversation_id || null,
+    conversationId,
     generationId: inner.generation_id || null,
     model: inner.model || outer.model || null,
     modelId: inner.model_id || null,
-    status: inner.status || inner.final_status || inner.reason || null,
+    status,
     loopCount: inner.loop_count ?? null,
     inputTokens: num(inner.input_tokens),
     outputTokens: num(inner.output_tokens),
@@ -150,11 +164,11 @@ export function unwrapAuditEntry(outer) {
     durationMs: num(inner.duration_ms),
     workspaceRoots,
     project: primaryWorkspace(workspaceRoots) ||
-      projectFromTranscriptPath(inner.transcript_path),
-    transcriptPath: inner.transcript_path || null,
+      projectFromTranscriptPath(transcriptPath),
+    transcriptPath,
     cursorVersion: inner.cursor_version || null,
     composerMode: inner.composer_mode || null,
-    prompt: inner.prompt || inner.user_message || null,
+    prompt,
     subagentType: inner.subagent_type || null,
     reason: inner.reason || null,
     finalStatus: inner.final_status || null,

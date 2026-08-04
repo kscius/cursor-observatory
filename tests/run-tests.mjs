@@ -38,6 +38,15 @@ import { fileURLToPath } from "node:url";
 
 const windowsProject = `C:${path.sep}Development${path.sep}AGORA`;
 assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
+// Unix Cursor project slugs must stay opaque (not misread as a Windows drive).
+assert.equal(decodeProjectSlug("home-ubuntu-workspace"), "home-ubuntu-workspace");
+assert.equal(decodeProjectSlug("workspace"), "workspace");
+assert.equal(
+  projectFromTranscriptPath(
+    "/home/ubuntu/.cursor/projects/home-ubuntu-workspace/agent-transcripts/x.jsonl"
+  ),
+  "home-ubuntu-workspace"
+);
 assert.equal(normalizeProjectPath("c:\\Development\\foo"), `C:${path.sep}Development${path.sep}foo`);
 assert.equal(shortProjectName("c:\\Development\\AGORA"), "AGORA");
 assert.equal(projectPathContext("c:\\Development\\AGORA"), "C:/Development");
@@ -202,6 +211,35 @@ const blankHookEventAudit = unwrapAuditEntry({
 });
 assert.equal(blankHookEventAudit.eventType, "sessionEnd");
 
+// Audit unwrap: blank/whitespace fields fall through aliases (match collector/secondary)
+{
+  const blankAliases = unwrapAuditEntry({
+    timestamp: "2026-06-18T00:34:02.971Z",
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "stop",
+        conversation_id: "   ",
+        session_id: "conv-audit-blank-id",
+        status: "\t",
+        final_status: "completed",
+        prompt: " ",
+        user_message: "hello from alias",
+        transcript_path: "",
+        agent_transcript_path:
+          "C:/Users/x/.cursor/projects/c-Development-AuditAlias/agent-transcripts/x.jsonl",
+      }),
+    },
+  });
+  assert.equal(blankAliases.conversationId, "conv-audit-blank-id");
+  assert.equal(blankAliases.status, "completed");
+  assert.equal(blankAliases.prompt, "hello from alias");
+  assert.equal(
+    blankAliases.transcriptPath,
+    "C:/Users/x/.cursor/projects/c-Development-AuditAlias/agent-transcripts/x.jsonl"
+  );
+  assert.equal(blankAliases.project, `C:${path.sep}Development${path.sep}AuditAlias`);
+}
+
 // Blank timestamp must fall through to ts (pickTs skips empty strings)
 {
   const blankOuter = unwrapAuditEntry({
@@ -353,6 +391,21 @@ assert.ok(behavior.archetype);
 
 const withTests = scoreBehaviorFromPrompts(["please run tests on the module"]);
 assert.ok(withTests.dimensions.verification > 0, "tests regex should match");
+
+// Empty DB report totals must be numeric zeros (not null SUM results)
+{
+  const emptyDb = openDatabase(path.join(os.tmpdir(), `obs-empty-${process.pid}-${Date.now()}.db`));
+  const emptyReport = buildJsonReport(emptyDb);
+  assert.equal(emptyReport.totals.sessions, 0);
+  assert.equal(emptyReport.totals.events, 0);
+  assert.equal(emptyReport.totals.input_tokens, 0);
+  assert.equal(emptyReport.totals.output_tokens, 0);
+  assert.equal(emptyReport.totals.cache_read_tokens, 0);
+  assert.equal(emptyReport.totals.cache_write_tokens, 0);
+  assert.equal(emptyReport.totals.tool_failures, 0);
+  assert.equal(emptyReport.totals.subagent_events, 0);
+  emptyDb.close();
+}
 
 // Integration: fixture audit log → ingest → rollup → report keys
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "obs-test-"));
@@ -646,6 +699,84 @@ assert.equal(
     .duration_ms,
   0
 );
+
+// Duplicate sessionEnd rows must not sum durations
+{
+  const dupDurConv = "conv-dup-sessionend";
+  insertEvent.run(
+    "2026-06-20T12:10:00.000Z",
+    "stop",
+    dupDurConv,
+    "model-a",
+    1,
+    1,
+    null,
+    "r-dup.jsonl",
+    1
+  );
+  insertEvent.run(
+    "2026-06-20T12:11:00.000Z",
+    "sessionEnd",
+    dupDurConv,
+    null,
+    null,
+    null,
+    5000,
+    "r-dup.jsonl",
+    2
+  );
+  insertEvent.run(
+    "2026-06-20T12:12:00.000Z",
+    "sessionEnd",
+    dupDurConv,
+    null,
+    null,
+    null,
+    8000,
+    "r-dup.jsonl",
+    3
+  );
+  rollupSessions(rollupDb);
+  assert.equal(
+    rollupDb.prepare("SELECT duration_ms FROM sessions WHERE conversation_id = ?").get(dupDurConv)
+      .duration_ms,
+    8000,
+    "duplicate sessionEnd must use MAX duration, not SUM"
+  );
+}
+
+// sessionEnd with null duration still yields 0 (session ended, duration unknown)
+{
+  const nullDurConv = "conv-null-sessionend-duration";
+  insertEvent.run(
+    "2026-06-20T12:20:00.000Z",
+    "stop",
+    nullDurConv,
+    "model-a",
+    1,
+    1,
+    null,
+    "r-null-dur.jsonl",
+    1
+  );
+  insertEvent.run(
+    "2026-06-20T12:21:00.000Z",
+    "sessionEnd",
+    nullDurConv,
+    null,
+    null,
+    null,
+    null,
+    "r-null-dur.jsonl",
+    2
+  );
+  rollupSessions(rollupDb);
+  assert.equal(
+    rollupDb.prepare("SELECT duration_ms FROM sessions WHERE conversation_id = ?").get(nullDurConv)
+      .duration_ms,
+    0
+  );
+}
 
 // Empty conversation_id must not create a sessions row
 rollupDb
@@ -2869,6 +3000,62 @@ watchDb.close();
   }
 }
 
+// Watch attaches an error listener so runtime watcher failures do not crash the process
+{
+  const watchErrDb = openDatabase(path.join(tmp, "watch-err-listener.db"));
+  const origWatch = fs.watch;
+  const origWarn = console.warn;
+  const warnLines = [];
+  const fakeWatchers = [];
+  fs.watch = () => {
+    const listeners = {};
+    const w = {
+      on(event, fn) {
+        (listeners[event] ||= []).push(fn);
+        return w;
+      },
+      emit(event, ...args) {
+        for (const fn of listeners[event] || []) fn(...args);
+      },
+      close() {},
+    };
+    fakeWatchers.push(w);
+    return w;
+  };
+  console.warn = (...args) => warnLines.push(args.join(" "));
+  try {
+    const stopErrWatch = startWatch(
+      {
+        hooksLogsDir: path.join(tmp, "watch-err-hooks"),
+        projectsDir: path.join(tmp, "watch-err-projects"),
+        dataDir: path.join(tmp, "watch-err-data"),
+        reportsDir: path.join(tmp, "watch-err-reports"),
+        ingest: {
+          auditLogs: false,
+          sessionSummary: false,
+          subagentAudit: false,
+          toolFailures: false,
+          transcripts: false,
+          hookEvents: false,
+          includeRotatedLogs: false,
+        },
+        recommendations: { enabled: false, llm: { enabled: false } },
+      },
+      watchErrDb,
+      { intervalMs: 60_000 }
+    );
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok(fakeWatchers.length >= 1);
+    for (const w of fakeWatchers) w.emit("error", new Error("mock EMFILE"));
+    assert.ok(warnLines.some((line) => line.includes("fs.watch error")));
+    await stopErrWatch();
+  } finally {
+    fs.watch = origWatch;
+    console.warn = origWarn;
+    watchErrDb.close();
+  }
+}
+
 // Watch stop waits for an in-flight refresh before returning
 {
   const stopWaitDb = openDatabase(path.join(tmp, "watch-stop-wait.db"));
@@ -2996,6 +3183,33 @@ assert.equal(
   1
 );
 parseableDb.close();
+
+// Newline-terminated JSONL followed by trailing whitespace is still complete
+{
+  const trailWsHooksDir = path.join(tmp, "hooks-trail-ws", "logs");
+  fs.mkdirSync(trailWsHooksDir, { recursive: true });
+  const trailWsPath = path.join(trailWsHooksDir, "agent-audit.jsonl");
+  const trailWsLine = JSON.stringify({
+    timestamp: "2026-06-21T14:00:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-trail-ws",
+        hook_event_name: "stop",
+        model: "model-c",
+      }),
+    },
+  });
+  fs.writeFileSync(trailWsPath, trailWsLine + "\n   ");
+  const trailWsDb = openDatabase(path.join(tmp, "trail-ws.db"));
+  const trailWsFirst = ingestAuditLogs(trailWsDb, trailWsHooksDir, false);
+  assert.equal(trailWsFirst.inserted, 1, "trailing whitespace after newline must not skip the row");
+  assert.equal(
+    trailWsDb.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(trailWsPath)
+      .last_line,
+    1
+  );
+  trailWsDb.close();
+}
 
 // Corrupt middle JSONL line should still advance checkpoint
 const corruptHooksDir = path.join(tmp, "hooks-corrupt", "logs");
@@ -3499,11 +3713,19 @@ await assert.rejects(() => runCli(["status", "stray"]), /Unexpected argument for
 // --interval validation
 assert.equal(parseIntervalMs([]), 30000);
 assert.equal(parseIntervalMs(["--interval", "60"]), 60000);
+assert.equal(parseIntervalMs(["--interval=60"]), 60000);
 assert.equal(parseIntervalMs(["--interval", "2147483.647"]), 2147483647);
+assert.doesNotThrow(() => assertKnownFlags("watch", ["--interval=5", "--with-llm"]));
 assert.throws(() => parseIntervalMs(["--interval"]), /requires a positive number/);
+assert.throws(() => parseIntervalMs(["--interval="]), /requires a positive number|Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "0"]), /Invalid --interval/);
+assert.throws(() => parseIntervalMs(["--interval=0"]), /Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "-5"]), /requires a positive number|Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "abc"]), /Invalid --interval/);
+assert.throws(
+  () => parseIntervalMs(["--interval", "60", "--interval=30"]),
+  /specified more than once/
+);
 assert.throws(
   () => parseIntervalMs(["--interval", "2147483.648"]),
   /maximum 2147483\.647 seconds/

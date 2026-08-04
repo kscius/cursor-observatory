@@ -112,12 +112,12 @@ export function buildJsonReport(db) {
     `SELECT
       COUNT(DISTINCT NULLIF(conversation_id, '')) AS sessions,
       COUNT(*) AS events,
-      SUM(CASE WHEN event_type='stop' THEN COALESCE(input_tokens,0) ELSE 0 END) AS input_tokens,
-      SUM(CASE WHEN event_type='stop' THEN COALESCE(output_tokens,0) ELSE 0 END) AS output_tokens,
-      SUM(CASE WHEN event_type='stop' THEN COALESCE(cache_read_tokens,0) ELSE 0 END) AS cache_read_tokens,
-      SUM(CASE WHEN event_type='stop' THEN COALESCE(cache_write_tokens,0) ELSE 0 END) AS cache_write_tokens,
-      SUM(CASE WHEN event_type='toolFailure' THEN 1 ELSE 0 END) AS tool_failures,
-      SUM(CASE WHEN subagent_type IS NOT NULL OR event_type='subagentStop' THEN 1 ELSE 0 END) AS subagent_events
+      COALESCE(SUM(CASE WHEN event_type='stop' THEN COALESCE(input_tokens,0) ELSE 0 END), 0) AS input_tokens,
+      COALESCE(SUM(CASE WHEN event_type='stop' THEN COALESCE(output_tokens,0) ELSE 0 END), 0) AS output_tokens,
+      COALESCE(SUM(CASE WHEN event_type='stop' THEN COALESCE(cache_read_tokens,0) ELSE 0 END), 0) AS cache_read_tokens,
+      COALESCE(SUM(CASE WHEN event_type='stop' THEN COALESCE(cache_write_tokens,0) ELSE 0 END), 0) AS cache_write_tokens,
+      COALESCE(SUM(CASE WHEN event_type='toolFailure' THEN 1 ELSE 0 END), 0) AS tool_failures,
+      COALESCE(SUM(CASE WHEN subagent_type IS NOT NULL OR event_type='subagentStop' THEN 1 ELSE 0 END), 0) AS subagent_events
     FROM events`
   );
 

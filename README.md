@@ -27,15 +27,16 @@ Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (beha
 git clone https://github.com/kscius/cursor-observatory.git
 cd cursor-observatory
 node --version  # requires Node.js 22+
-npm install
+npm install     # optional — zero runtime dependencies
 npm run dashboard
+# headless / CI: npm run dashboard:headless
 ```
 
 This will:
 
 1. Ingest hook logs + agent transcripts from `~/.cursor`
 2. Apply retention (if configured), then aggregate into SQLite at `~/.cursor/observatory/observatory.db`
-3. Generate stamped `report-*.html/json` plus atomic `latest.html`/`latest.json` under `~/.cursor/observatory/reports/` and open the HTML report
+3. Generate stamped `report-*.html/json` plus atomic `latest.html`/`latest.json` under `~/.cursor/observatory/reports/` and open the HTML report (use `--no-open` / `dashboard:headless` to skip the browser)
 
 On a fresh machine with no Cursor telemetry yet, the first dashboard is empty — that is expected. Run `status` or check `~/.cursor/hooks/logs/` if you expected data.
 
@@ -56,9 +57,11 @@ node bin/cursor-observatory.mjs dashboard --no-open  # headless / CI (skip brows
 node bin/cursor-observatory.mjs dashboard --with-llm
 node bin/cursor-observatory.mjs watch           # auto-refresh on file changes (30s interval, 2s debounce)
 node bin/cursor-observatory.mjs watch --interval 60  # interval in seconds (must be > 0)
+node bin/cursor-observatory.mjs watch --interval=60  # same, equals form also accepted
 node bin/cursor-observatory.mjs watch --with-llm     # enable LLM coaching during watch refreshes
 node bin/cursor-observatory.mjs prune           # apply retention (if configured)
 node bin/cursor-observatory.mjs status          # DB summary
+node bin/cursor-observatory.mjs --help          # usage overview
 npm test
 ```
 
@@ -128,7 +131,7 @@ Enable collector ingest with `"ingest": { "hookEvents": true }` in `~/.cursor/ob
 
 Copy `config.example.json` to `~/.cursor/observatory/config.json` to customize paths.
 
-Config is resolved in this order (first existing file wins; files are not merged): `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`, including `watch --with-llm`). Override `recommendations.llm.baseUrl` for OpenAI-compatible endpoints (default `https://api.openai.com/v1`; only the OpenAI chat-completions shape is supported today — `provider` is reserved for cache keying). Use `recommendations.llm.timeoutMs` to cap each coaching request (default `30000`). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). Retention deletes aged rows from the SQLite DB (events and prompt previews), not source logs, transcripts, stamped reports, or the LLM cache. `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
+Config is resolved in this order (first existing file wins; files are not merged): `~/.cursor/observatory/config.json`, repo-local `config.json`, then `config.example.json` as a fallback. Deterministic recommendations run locally by default; LLM coaching remains opt-in via `--with-llm` or by setting `recommendations.llm.enabled` to `true` in your copied config (`--with-llm` still works when `recommendations.enabled` is `false`, including `watch --with-llm`). Override `recommendations.llm.baseUrl` for OpenAI-compatible endpoints (default `https://api.openai.com/v1`; only the OpenAI chat-completions shape is supported today — `provider` is reserved for cache keying). Use `recommendations.llm.timeoutMs` to cap each coaching request (default `30000`, max `120000`). Set `retention.keepRawEventsDays` to a positive integer to enable `prune` / dashboard retention (`0` means disabled). Retention deletes aged rows from the SQLite DB (events and prompt previews), not source logs, transcripts, stamped reports, or the LLM cache. `archiveDir` is reserved for future event archival; the CLI creates the directory but does not write to it yet.
 
 ## Recommendations (Guide cards)
 
