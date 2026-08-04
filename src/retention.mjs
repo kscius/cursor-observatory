@@ -22,6 +22,15 @@ export function applyRetention(db, config) {
       db
         .prepare(`DELETE FROM events WHERE ts IS NULL OR ts < ?`)
         .run(cutoff).changes ?? 0;
+    // Drop transcript fingerprints for conversations losing transcript prompts so
+    // ingest can re-parse unchanged files after retention (mtime/size skip otherwise).
+    db.prepare(
+      `DELETE FROM transcripts
+       WHERE conversation_id IN (
+         SELECT DISTINCT conversation_id FROM prompts
+         WHERE source = 'transcript' AND (ts IS NULL OR ts < ?)
+       )`
+    ).run(cutoff);
     const prunedPrompts =
       db
         .prepare(`DELETE FROM prompts WHERE ts IS NULL OR ts < ?`)

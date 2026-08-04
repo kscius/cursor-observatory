@@ -910,6 +910,74 @@ assert.equal(
 );
 promptRetentionDb.close();
 
+// Retention: clearing transcript prompts also drops transcript fingerprints for re-ingest
+{
+  const retentionTranscriptDir = path.join(
+    tmp,
+    "projects-retention",
+    "c-Development-Retention",
+    "agent-transcripts",
+    "conv-retention-transcript"
+  );
+  fs.mkdirSync(retentionTranscriptDir, { recursive: true });
+  const retentionTranscriptPath = path.join(
+    retentionTranscriptDir,
+    "conv-retention-transcript.jsonl"
+  );
+  fs.writeFileSync(
+    retentionTranscriptPath,
+    JSON.stringify({
+      role: "user",
+      message: {
+        content: [{ type: "text", text: "<user_query>\nretention transcript prompt\n</user_query>" }],
+      },
+    }) + "\n"
+  );
+  const retentionTranscriptDb = openDatabase(path.join(tmp, "retention-transcript.db"));
+  const retentionTranscriptConfig = {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory-retention-transcript"),
+    hooksLogsDir: hooksDir,
+    projectsDir: path.join(tmp, "projects-retention"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: true,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  };
+  ingestAll(retentionTranscriptDb, retentionTranscriptConfig);
+  assert.equal(
+    retentionTranscriptDb.prepare("SELECT COUNT(*) AS n FROM transcripts").get().n,
+    1
+  );
+  retentionTranscriptDb
+    .prepare(`UPDATE prompts SET ts = ? WHERE source = 'transcript'`)
+    .run("2020-01-01T00:00:00.000Z");
+  const transcriptRetention = applyRetention(retentionTranscriptDb, {
+    retention: { keepRawEventsDays: 30 },
+  });
+  assert.equal(transcriptRetention.prunedPrompts, 1);
+  assert.equal(
+    retentionTranscriptDb.prepare("SELECT COUNT(*) AS n FROM transcripts").get().n,
+    0,
+    "transcript fingerprint must be removed when transcript prompts are pruned"
+  );
+  const reingest = ingestAll(retentionTranscriptDb, retentionTranscriptConfig);
+  assert.equal(reingest.transcripts.transcripts, 1);
+  assert.equal(reingest.transcripts.prompts, 1);
+  assert.ok(
+    retentionTranscriptDb
+      .prepare("SELECT preview FROM prompts LIMIT 1")
+      .get()
+      .preview.includes("retention transcript prompt")
+  );
+  retentionTranscriptDb.close();
+}
+
 // Prune + rollup: session aggregates reflect retained events only
 const pruneDbPath = path.join(tmp, "prune-rollup.db");
 const pruneDb = openDatabase(pruneDbPath);
@@ -1848,6 +1916,28 @@ dayDb.close();
   blankDayDb.close();
 }
 
+// hourly_stats.session_count counts distinct stop conversations only
+{
+  const hourlyDb = openDatabase(path.join(tmp, "hourly-sessions.db"));
+  const hourKey = "2026-06-22T10";
+  const ins = hourlyDb.prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, model, input_tokens, output_tokens, source_file, source_line)
+     VALUES (?, ?, ?, 'model-a', ?, ?, 'h.jsonl', ?)`
+  );
+  ins.run(`${hourKey}:05:00.000Z`, "preToolUse", "tool-only-conv", null, null, 1);
+  ins.run(`${hourKey}:10:00.000Z`, "stop", "stop-conv", 10, 1, 2);
+  runAllRollups(hourlyDb);
+  const row = hourlyDb
+    .prepare(`SELECT session_count FROM hourly_stats WHERE hour_key = ? AND model = 'model-a'`)
+    .get(hourKey);
+  assert.equal(
+    row.session_count,
+    1,
+    "tool-only conversation must not inflate hourly session_count"
+  );
+  hourlyDb.close();
+}
+
 // daily_stats.prompt_count must respect model dimension (not duplicate across models)
 const promptCountDbPath = path.join(tmp, "daily-prompt-count.db");
 const promptCountDb = openDatabase(promptCountDbPath);
@@ -2735,6 +2825,24 @@ const collectorEntry = JSON.parse(fs.readFileSync(collectorLog, "utf8").trim().s
 assert.equal(collectorEntry.hook_event_name, "stop");
 assert.equal(collectorEntry.conversation_id, "conv-collector");
 
+// Collector: string workspace_roots coerced to single-element array
+const collectorStringRoots = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({
+    event: "stop",
+    session_id: "conv-collector-string-root",
+    timestamp: "2026-06-20T15:30:00.000Z",
+    model: "collector-sub",
+    workspace_roots: "/c:/Development/Collector",
+  }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorStringRoots.status, 0);
+const stringRootEntry = JSON.parse(
+  fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
+);
+assert.deepEqual(stringRootEntry.workspace_roots, ["/c:/Development/Collector"]);
+
 // Reject non-object / missing event name
 const collectorReject = spawnSync(process.execPath, [collectorScript], {
   input: "null",
@@ -2742,7 +2850,7 @@ const collectorReject = spawnSync(process.execPath, [collectorScript], {
   env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
 });
 assert.equal(collectorReject.status, 0);
-assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 1);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 2);
 
 // Collector: reason → status, epoch ms → ISO, reject non-string event names
 const collectorReason = spawnSync(process.execPath, [collectorScript], {
@@ -2784,7 +2892,7 @@ const collectorBadEvent = spawnSync(process.execPath, [collectorScript], {
   env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
 });
 assert.equal(collectorBadEvent.status, 0);
-assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 3);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 4);
 
 // Collector: blank hook_event_name falls through to event; naive datetime → UTC ISO
 const collectorBlankNameAlias = spawnSync(process.execPath, [collectorScript], {
