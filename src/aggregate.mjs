@@ -27,10 +27,11 @@ export function rollupSessions(db) {
         )
         ELSE NULL
       END AS duration_ms,
-      SUM(CASE WHEN event_type = 'subagentStop' OR subagent_type IS NOT NULL THEN 1 ELSE 0 END) AS subagent_count
+      SUM(CASE WHEN event_type = 'subagentStop' THEN 1 ELSE 0 END) AS subagent_count
     FROM events
     WHERE NULLIF(conversation_id, '') IS NOT NULL
-    GROUP BY conversation_id`
+    GROUP BY conversation_id
+    HAVING SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END) > 0`
   );
 
   const modelStmt = db.prepare(

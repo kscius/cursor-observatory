@@ -151,7 +151,7 @@ export async function runCli(argv) {
     console.log(`  Cache read tokens: ${totals?.cache_read ?? 0}`);
     const behavior = queryScalar(
       db,
-      `SELECT fluency_score, archetype, real_prompt_count FROM behavior_snapshots WHERE period='all-time'`
+      `SELECT fluency_score, archetype, real_prompt_count FROM behavior_snapshots WHERE period='all-time' AND period_key='all'`
     );
     if (behavior) {
       const conf =

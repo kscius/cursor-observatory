@@ -184,7 +184,8 @@ export function buildJsonReport(db) {
        FROM events
        WHERE event_type='stop' AND model IS NOT NULL
        GROUP BY model
-       ORDER BY input_tokens DESC`
+       ORDER BY input_tokens DESC
+       LIMIT 20`
     ),
     daily: queryAll(
       db,
