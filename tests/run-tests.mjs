@@ -14,6 +14,7 @@ import {
   unwrapAuditEntry,
   parseTranscriptRecords,
   stripBom,
+  normalizeWorkspaceRoots,
   primaryWorkspace,
   projectFromTranscriptPath,
   isInjectedPrompt,
@@ -150,7 +151,7 @@ assert.equal(unwrapAuditEntry(innerEventAudit).eventType, "stop");
   assert.equal(statusWins.status, "ok");
 }
 
-// Audit unwrap accepts collector-style `ts` and coerces non-array workspace_roots
+// Audit unwrap accepts collector-style `ts` and coerces string workspace_roots
 {
   const withTs = unwrapAuditEntry({
     ts: "2026-06-18T00:34:02.971Z",
@@ -158,13 +159,13 @@ assert.equal(unwrapAuditEntry(innerEventAudit).eventType, "stop");
       raw: JSON.stringify({
         hook_event_name: "stop",
         conversation_id: "conv-ts-alias",
-        workspace_roots: "not-an-array",
+        workspace_roots: "/c:/Development/StringRoot",
       }),
     },
   });
   assert.equal(withTs.ts, "2026-06-18T00:34:02.971Z");
-  assert.deepEqual(withTs.workspaceRoots, []);
-  assert.equal(withTs.project, null);
+  assert.deepEqual(withTs.workspaceRoots, ["/c:/Development/StringRoot"]);
+  assert.ok(withTs.project);
 
   const innerTs = unwrapAuditEntry({
     data: {
@@ -1105,6 +1106,48 @@ assert.ok(
   !transcriptDb.prepare("SELECT preview FROM prompts LIMIT 1").get().preview.includes("<user_query>")
 );
 
+// Transcript ingest: BOM-prefixed lines parse correctly
+{
+  const bomProjectsDir = path.join(tmp, "bom-projects");
+  const bomTranscriptDir = path.join(
+    bomProjectsDir,
+    "c-Development-Bom",
+    "agent-transcripts",
+    "conv-bom-transcript"
+  );
+  fs.mkdirSync(bomTranscriptDir, { recursive: true });
+  const bomTranscriptPath = path.join(bomTranscriptDir, "conv-bom-transcript.jsonl");
+  fs.writeFileSync(
+    bomTranscriptPath,
+    "\uFEFF" +
+      JSON.stringify({
+        role: "user",
+        message: {
+          content: [{ type: "text", text: "bom-prefixed user prompt" }],
+        },
+      }) +
+      "\n"
+  );
+  const bomTranscriptDb = openDatabase(path.join(tmp, "bom-transcript.db"));
+  const bomTranscriptSummary = ingestAll(bomTranscriptDb, {
+    ...transcriptConfig,
+    projectsDir: bomProjectsDir,
+  });
+  assert.equal(bomTranscriptSummary.transcripts.prompts, 1);
+  assert.ok(
+    bomTranscriptDb.prepare("SELECT preview FROM prompts LIMIT 1").get().preview.includes(
+      "bom-prefixed user prompt"
+    )
+  );
+  bomTranscriptDb.close();
+}
+
+// normalizeWorkspaceRoots: array, string, and invalid values
+assert.deepEqual(normalizeWorkspaceRoots(["/a"]), ["/a"]);
+assert.deepEqual(normalizeWorkspaceRoots("/c:/Development/Foo"), ["/c:/Development/Foo"]);
+assert.deepEqual(normalizeWorkspaceRoots("  "), []);
+assert.deepEqual(normalizeWorkspaceRoots(null), []);
+
 // Transcript re-ingest: unchanged mtime skips re-parse
 const mtimeSecond = ingestAll(transcriptDb, transcriptConfig);
 assert.equal(mtimeSecond.transcripts.transcripts, 0);
@@ -1608,6 +1651,26 @@ aliasDb.close();
   subagentIdDb.close();
 }
 
+// subagent-audit: hook_event_name wins over conflicting event alias
+{
+  const subagentNameHooksDir = path.join(tmp, "subagent-name-hooks", "logs");
+  fs.mkdirSync(subagentNameHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(subagentNameHooksDir, "subagent-audit.jsonl"),
+    JSON.stringify({
+      ts: "2026-06-21T13:10:00.000Z",
+      event: "stop",
+      hook_event_name: "subagentStop",
+      conversation_id: "conv-subagent-name",
+      subagent_type: "explore",
+      task: "hook_event_name should win",
+    }) + "\n"
+  );
+  const subagentNameDb = openDatabase(path.join(tmp, "subagent-name.db"));
+  const subagentNameSummary = ingestAll(subagentNameDb, {
+    cursorHome: path.join(tmp, "subagent-name-hooks"),
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: subagentNameHooksDir,
 // subagent-audit: transcript_path alias order, project attribution, preview alias fallthrough
 {
   const subagentMetaHooksDir = path.join(tmp, "subagent-meta-hooks", "logs");
@@ -1652,6 +1715,14 @@ aliasDb.close();
       includeRotatedLogs: false,
     },
   });
+  assert.equal(subagentNameSummary.subagent.inserted, 1);
+  assert.equal(
+    subagentNameDb.prepare("SELECT event_type FROM events WHERE conversation_id = ?").get(
+      "conv-subagent-name"
+    ).event_type,
+    "subagentStop"
+  );
+  subagentNameDb.close();
   assert.equal(subagentMetaSummary.subagent.inserted, 1);
   const subagentMetaRow = subagentMetaDb
     .prepare("SELECT project, prompt_preview, transcript_path FROM events WHERE conversation_id = ?")
@@ -1763,6 +1834,21 @@ assert.equal(hookAliasRow.event_type, "sessionEnd");
 assert.equal(hookAliasRow.input_tokens, 42);
 assert.equal(hookAliasRow.status, "completed");
 
+// Hook events: string workspace_roots coerced to single-element array
+const hookStringRootLine = JSON.stringify({
+  timestamp: "2026-06-20T14:15:00.000Z",
+  hook_event_name: "stop",
+  conversation_id: "conv-hook-string-root",
+  workspace_roots: "/c:/Development/HookStringRoot",
+});
+fs.appendFileSync(path.join(hookEventsDir, "hook-events.jsonl"), hookStringRootLine + "\n");
+const hookStringRootSummary = ingestAll(hookDb, hookConfig);
+assert.equal(hookStringRootSummary.hookEvents.inserted, 1);
+const hookStringRootRow = hookDb
+  .prepare("SELECT project FROM events WHERE conversation_id = ?")
+  .get("conv-hook-string-root");
+assert.ok(hookStringRootRow.project);
+
 // Hook events: blank hook_event_name falls through to event alias
 const hookBlankNameAliasLine = JSON.stringify({
   timestamp: "2026-06-20T14:30:00.000Z",
@@ -1865,6 +1951,10 @@ if (!fs.existsSync(userConfigPath)) {
     assert.throws(() => loadConfig(), /Invalid JSON in config file/);
     fs.writeFileSync(repoConfigPath, "[]");
     assert.throws(() => loadConfig(), /must be a JSON object/);
+
+    // UTF-8 BOM prefix is stripped before JSON.parse
+    fs.writeFileSync(repoConfigPath, "\uFEFF" + JSON.stringify({ cursorHome: "/tmp/bom-config-home" }));
+    assert.equal(loadConfig().cursorHome, "/tmp/bom-config-home");
 
     // String sections become a one-item list; invalid types fall back to defaults
     fs.writeFileSync(
@@ -3978,6 +4068,18 @@ corruptDb.close();
   statusDb.close();
 }
 
+// status: empty DB returns numeric zeros from COALESCE'd sums (not SQL NULL)
+{
+  const emptyStatusDb = openDatabase(path.join(tmp, "empty-status.db"));
+  const emptyTotals = queryScalar(
+    emptyStatusDb,
+    `SELECT
+      (SELECT COALESCE(SUM(CASE WHEN event_type='toolFailure' THEN 1 ELSE 0 END), 0) FROM events) AS tool_failures,
+      (SELECT COALESCE(SUM(CASE WHEN event_type='stop' THEN COALESCE(cache_read_tokens,0) ELSE 0 END), 0) FROM events) AS cache_read`
+  );
+  assert.equal(emptyTotals.tool_failures, 0);
+  assert.equal(emptyTotals.cache_read, 0);
+  emptyStatusDb.close();
 // status behavior query must target all-time / all snapshot (not arbitrary period_key)
 {
   const behaviorDb = openDatabase(path.join(tmp, "status-behavior.db"));

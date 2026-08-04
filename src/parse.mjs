@@ -25,6 +25,13 @@ export function projectFromTranscriptPath(transcriptPath) {
   return m ? decodeProjectSlug(m[1]) : null;
 }
 
+/** Coerce workspace_roots from array or single path string (hooks sometimes send a string). */
+export function normalizeWorkspaceRoots(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+}
+
 export function primaryWorkspace(roots) {
   if (!Array.isArray(roots) || roots.length === 0) return null;
   const first = roots.find((r) => typeof r === "string" && r.length > 0);
@@ -127,6 +134,7 @@ export function unwrapAuditEntry(outer) {
   const ts = normalizeTs(
     pickTs(outer.timestamp, inner.timestamp, outer.ts, inner.ts)
   );
+  const workspaceRoots = normalizeWorkspaceRoots(inner.workspace_roots);
   const workspaceRoots = Array.isArray(inner.workspace_roots) ? inner.workspace_roots : [];
   // Mirror collector/secondary ingest: whitespace-only values fall through to aliases.
   const conversationId = pickNonBlankString(
@@ -267,10 +275,11 @@ export function parseTranscriptRecords(lines, meta) {
   let toolCount = 0;
 
   for (const line of lines) {
-    if (!line.trim()) continue;
+    const trimmedLine = stripBom(line).trim();
+    if (!trimmedLine) continue;
     let e;
     try {
-      e = JSON.parse(line);
+      e = JSON.parse(trimmedLine);
     } catch {
       continue;
     }
