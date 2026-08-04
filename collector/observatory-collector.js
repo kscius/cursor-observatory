@@ -35,7 +35,7 @@ function resolveLogDir() {
   const configPath = path.join(home, ".cursor", "observatory", "config.json");
   try {
     if (fs.existsSync(configPath)) {
-      const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const raw = JSON.parse(fs.readFileSync(configPath, "utf8").replace(/^\uFEFF/, ""));
       if (raw && typeof raw.dataDir === "string" && raw.dataDir.trim()) {
         return path.join(expandHome(raw.dataDir), "events");
       }
@@ -144,7 +144,11 @@ async function main() {
     output_tokens: payload.output_tokens ?? null,
     cache_read_tokens: payload.cache_read_tokens ?? null,
     cache_write_tokens: payload.cache_write_tokens ?? null,
-    workspace_roots: Array.isArray(payload.workspace_roots) ? payload.workspace_roots : [],
+    workspace_roots: Array.isArray(payload.workspace_roots)
+      ? payload.workspace_roots
+      : typeof payload.workspace_roots === "string" && payload.workspace_roots.trim()
+        ? [payload.workspace_roots.trim()]
+        : [],
     transcript_path: transcriptPath,
     tool_name: payload.tool_name || null,
     command: payload.command || null,

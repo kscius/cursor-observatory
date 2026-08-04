@@ -20,13 +20,18 @@ export function rollupSessions(db) {
       SUM(CASE WHEN event_type IN ('preToolUse','postToolUse','afterShellExecution') THEN 1 ELSE 0 END) AS tool_count,
       CASE
         WHEN SUM(CASE WHEN event_type = 'sessionEnd' THEN 1 ELSE 0 END) > 0
-        THEN SUM(CASE WHEN event_type = 'sessionEnd' THEN COALESCE(duration_ms, 0) ELSE 0 END)
+        -- Duplicate sessionEnd rows must not inflate duration (use max, not sum).
+        THEN COALESCE(
+          MAX(CASE WHEN event_type = 'sessionEnd' THEN duration_ms ELSE NULL END),
+          0
+        )
         ELSE NULL
       END AS duration_ms,
-      SUM(CASE WHEN event_type = 'subagentStop' OR subagent_type IS NOT NULL THEN 1 ELSE 0 END) AS subagent_count
+      SUM(CASE WHEN event_type = 'subagentStop' THEN 1 ELSE 0 END) AS subagent_count
     FROM events
     WHERE NULLIF(conversation_id, '') IS NOT NULL
-    GROUP BY conversation_id`
+    GROUP BY conversation_id
+    HAVING SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END) > 0`
   );
 
   const modelStmt = db.prepare(
@@ -113,7 +118,7 @@ export function rollupTimeBuckets(db) {
       SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(input_tokens,0) ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(output_tokens,0) ELSE 0 END),
-      COUNT(DISTINCT NULLIF(conversation_id, ''))
+      COUNT(DISTINCT CASE WHEN event_type = 'stop' THEN NULLIF(conversation_id, '') END)
     FROM events
     WHERE ts IS NOT NULL
     GROUP BY hour_key, COALESCE(project,''), COALESCE(model,'')
@@ -129,7 +134,7 @@ export function rollupTimeBuckets(db) {
       SUM(CASE WHEN event_type = 'stop' THEN 1 ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(input_tokens,0) ELSE 0 END),
       SUM(CASE WHEN event_type = 'stop' THEN COALESCE(output_tokens,0) ELSE 0 END),
-      COUNT(DISTINCT NULLIF(conversation_id, '')),
+      COUNT(DISTINCT CASE WHEN event_type = 'stop' THEN NULLIF(conversation_id, '') END),
       0
     FROM events
     WHERE ts IS NOT NULL

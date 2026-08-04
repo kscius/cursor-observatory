@@ -33,8 +33,18 @@ function countCompleteLines(content) {
   return n;
 }
 
+/** True when every JSONL record is newline-terminated (ignore trailing whitespace). */
+function hasCompleteTrailingLine(content) {
+  if (content.endsWith("\n")) return true;
+  const lastNl = content.lastIndexOf("\n");
+  // No newline at all → single incomplete (or unterminated) physical line.
+  if (lastNl === -1) return false;
+  // Whitespace after the final newline is not a mid-append partial JSON record.
+  return !content.slice(lastNl + 1).trim();
+}
+
 function* readLinesFromContent(content, startLine = 0) {
-  const endsWithNewline = content.endsWith("\n");
+  const completeTrailing = hasCompleteTrailingLine(content);
   const lines = content.split(/\r?\n/);
   let lastNonEmptyIndex = -1;
   for (let i = startLine; i < lines.length; i++) {
@@ -47,7 +57,7 @@ function* readLinesFromContent(content, startLine = 0) {
       line,
       lineNo: i + 1,
       // Incomplete trailing write (collector mid-append) — do not checkpoint past it.
-      isTrailingPartialLine: !endsWithNewline && i === lastNonEmptyIndex,
+      isTrailingPartialLine: !completeTrailing && i === lastNonEmptyIndex,
     };
   }
 }
@@ -144,13 +154,14 @@ function auditToEvent(outer, sourceFile, sourceLine) {
 }
 
 function subagentToEvent(outer, sourceFile, sourceLine) {
+  const transcriptPath = pickNonBlankString(outer.transcript_path, outer.agent_transcript_path);
   return {
     ts: eventTs(outer),
     eventType: pickNonBlankString(outer.hook_event_name, outer.event) || "subagentStop",
     conversationId: pickNonBlankString(outer.conversation_id, outer.session_id),
     generationId: outer.generation_id || null,
     model: outer.model || null,
-    project: null,
+    project: projectFromTranscriptPath(transcriptPath),
     workspaceRoots: [],
     inputTokens: null,
     outputTokens: null,
@@ -159,10 +170,10 @@ function subagentToEvent(outer, sourceFile, sourceLine) {
     toolName: null,
     command: null,
     durationMs: num(outer.duration_ms),
-    transcriptPath: pickNonBlankString(outer.agent_transcript_path, outer.transcript_path),
+    transcriptPath,
     cursorVersion: outer.cursor_version || null,
     composerMode: null,
-    promptPreview: String(outer.task || outer.description || "").slice(0, 300),
+    promptPreview: (pickNonBlankString(outer.task, outer.description) || "").slice(0, 300),
     subagentType: outer.subagent_type || null,
     status: eventStatus(outer),
     sourceFile,
@@ -247,7 +258,7 @@ export function ingestToolFailures(db, hooksLogsDir) {
     transcriptPath: null,
     cursorVersion: outer.cursor_version || null,
     composerMode: null,
-    promptPreview: String(outer.error || outer.message || "").slice(0, 300),
+    promptPreview: (pickNonBlankString(outer.error, outer.message) || "").slice(0, 300),
     subagentType: null,
     status: eventStatus(outer, "failed"),
     sourceFile,
@@ -340,7 +351,7 @@ export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
         project,
         fileSize: stat.size,
         mtimeMs: stat.mtimeMs,
-        lineCount: lines.filter((l) => l.trim()).length,
+        lineCount: lines.filter((l) => stripBom(l).trim()).length,
         promptCount,
         toolCount,
       });

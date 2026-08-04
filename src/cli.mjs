@@ -16,7 +16,7 @@ Usage:
   cursor-observatory rollup
   cursor-observatory report [--json] [--with-llm]
   cursor-observatory dashboard [--full] [--no-open] [--with-llm]
-  cursor-observatory watch [--interval 30] [--with-llm]   (interval in seconds)
+  cursor-observatory watch [--interval 30|--interval=30] [--with-llm]   (seconds)
   cursor-observatory prune
   cursor-observatory status
 
@@ -66,6 +66,12 @@ const COMMAND_FLAGS = {
   watch: new Set(["--interval", "--with-llm"]),
 };
 
+/** Map `--interval=5` to the flag name `--interval` for allow-list checks. */
+function flagNameFor(arg) {
+  if (arg.startsWith("--interval=")) return "--interval";
+  return arg;
+}
+
 export function assertKnownFlags(cmd, rest) {
   const allowed = COMMAND_FLAGS[cmd];
   if (!allowed) return;
@@ -77,18 +83,23 @@ export function assertKnownFlags(cmd, rest) {
     if (!arg.startsWith("-")) {
       throw new Error(`Unexpected argument for ${cmd}: ${arg}`);
     }
-    if (!allowed.has(arg)) {
+    const name = flagNameFor(arg);
+    if (!allowed.has(name)) {
       throw new Error(`Unknown flag for ${cmd}: ${arg}`);
     }
-    if (arg === "--interval") i += 1; // skip value; parseIntervalMs validates it
+    if (name === "--interval" && arg === "--interval") i += 1; // skip separate value
   }
 }
 
 export function parseIntervalMs(rest, flag = "--interval") {
+  const inline = rest.find((a) => typeof a === "string" && a.startsWith(`${flag}=`));
   const idx = rest.indexOf(flag);
-  if (idx === -1) return 30000;
-  const raw = rest[idx + 1];
-  if (!raw || raw.startsWith("-")) {
+  if (idx === -1 && !inline) return 30000;
+  if (idx !== -1 && inline) {
+    throw new Error(`${flag} specified more than once`);
+  }
+  const raw = inline ? inline.slice(flag.length + 1) : rest[idx + 1];
+  if (!raw || (!inline && raw.startsWith("-"))) {
     throw new Error(`${flag} requires a positive number of seconds`);
   }
   const n = Number(raw);
@@ -140,7 +151,7 @@ export async function runCli(argv) {
     console.log(`  Cache read tokens: ${totals?.cache_read ?? 0}`);
     const behavior = queryScalar(
       db,
-      `SELECT fluency_score, archetype, real_prompt_count FROM behavior_snapshots WHERE period='all-time'`
+      `SELECT fluency_score, archetype, real_prompt_count FROM behavior_snapshots WHERE period='all-time' AND period_key='all'`
     );
     if (behavior) {
       const conf =

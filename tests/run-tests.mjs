@@ -39,6 +39,15 @@ import { fileURLToPath } from "node:url";
 
 const windowsProject = `C:${path.sep}Development${path.sep}AGORA`;
 assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
+// Unix Cursor project slugs must stay opaque (not misread as a Windows drive).
+assert.equal(decodeProjectSlug("home-ubuntu-workspace"), "home-ubuntu-workspace");
+assert.equal(decodeProjectSlug("workspace"), "workspace");
+assert.equal(
+  projectFromTranscriptPath(
+    "/home/ubuntu/.cursor/projects/home-ubuntu-workspace/agent-transcripts/x.jsonl"
+  ),
+  "home-ubuntu-workspace"
+);
 assert.equal(normalizeProjectPath("c:\\Development\\foo"), `C:${path.sep}Development${path.sep}foo`);
 assert.equal(shortProjectName("c:\\Development\\AGORA"), "AGORA");
 assert.equal(projectPathContext("c:\\Development\\AGORA"), "C:/Development");
@@ -203,6 +212,35 @@ const blankHookEventAudit = unwrapAuditEntry({
 });
 assert.equal(blankHookEventAudit.eventType, "sessionEnd");
 
+// Audit unwrap: blank/whitespace fields fall through aliases (match collector/secondary)
+{
+  const blankAliases = unwrapAuditEntry({
+    timestamp: "2026-06-18T00:34:02.971Z",
+    data: {
+      raw: JSON.stringify({
+        hook_event_name: "stop",
+        conversation_id: "   ",
+        session_id: "conv-audit-blank-id",
+        status: "\t",
+        final_status: "completed",
+        prompt: " ",
+        user_message: "hello from alias",
+        transcript_path: "",
+        agent_transcript_path:
+          "C:/Users/x/.cursor/projects/c-Development-AuditAlias/agent-transcripts/x.jsonl",
+      }),
+    },
+  });
+  assert.equal(blankAliases.conversationId, "conv-audit-blank-id");
+  assert.equal(blankAliases.status, "completed");
+  assert.equal(blankAliases.prompt, "hello from alias");
+  assert.equal(
+    blankAliases.transcriptPath,
+    "C:/Users/x/.cursor/projects/c-Development-AuditAlias/agent-transcripts/x.jsonl"
+  );
+  assert.equal(blankAliases.project, `C:${path.sep}Development${path.sep}AuditAlias`);
+}
+
 // Blank timestamp must fall through to ts (pickTs skips empty strings)
 {
   const blankOuter = unwrapAuditEntry({
@@ -354,6 +392,21 @@ assert.ok(behavior.archetype);
 
 const withTests = scoreBehaviorFromPrompts(["please run tests on the module"]);
 assert.ok(withTests.dimensions.verification > 0, "tests regex should match");
+
+// Empty DB report totals must be numeric zeros (not null SUM results)
+{
+  const emptyDb = openDatabase(path.join(os.tmpdir(), `obs-empty-${process.pid}-${Date.now()}.db`));
+  const emptyReport = buildJsonReport(emptyDb);
+  assert.equal(emptyReport.totals.sessions, 0);
+  assert.equal(emptyReport.totals.events, 0);
+  assert.equal(emptyReport.totals.input_tokens, 0);
+  assert.equal(emptyReport.totals.output_tokens, 0);
+  assert.equal(emptyReport.totals.cache_read_tokens, 0);
+  assert.equal(emptyReport.totals.cache_write_tokens, 0);
+  assert.equal(emptyReport.totals.tool_failures, 0);
+  assert.equal(emptyReport.totals.subagent_events, 0);
+  emptyDb.close();
+}
 
 // Integration: fixture audit log → ingest → rollup → report keys
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "obs-test-"));
@@ -648,6 +701,84 @@ assert.equal(
   0
 );
 
+// Duplicate sessionEnd rows must not sum durations
+{
+  const dupDurConv = "conv-dup-sessionend";
+  insertEvent.run(
+    "2026-06-20T12:10:00.000Z",
+    "stop",
+    dupDurConv,
+    "model-a",
+    1,
+    1,
+    null,
+    "r-dup.jsonl",
+    1
+  );
+  insertEvent.run(
+    "2026-06-20T12:11:00.000Z",
+    "sessionEnd",
+    dupDurConv,
+    null,
+    null,
+    null,
+    5000,
+    "r-dup.jsonl",
+    2
+  );
+  insertEvent.run(
+    "2026-06-20T12:12:00.000Z",
+    "sessionEnd",
+    dupDurConv,
+    null,
+    null,
+    null,
+    8000,
+    "r-dup.jsonl",
+    3
+  );
+  rollupSessions(rollupDb);
+  assert.equal(
+    rollupDb.prepare("SELECT duration_ms FROM sessions WHERE conversation_id = ?").get(dupDurConv)
+      .duration_ms,
+    8000,
+    "duplicate sessionEnd must use MAX duration, not SUM"
+  );
+}
+
+// sessionEnd with null duration still yields 0 (session ended, duration unknown)
+{
+  const nullDurConv = "conv-null-sessionend-duration";
+  insertEvent.run(
+    "2026-06-20T12:20:00.000Z",
+    "stop",
+    nullDurConv,
+    "model-a",
+    1,
+    1,
+    null,
+    "r-null-dur.jsonl",
+    1
+  );
+  insertEvent.run(
+    "2026-06-20T12:21:00.000Z",
+    "sessionEnd",
+    nullDurConv,
+    null,
+    null,
+    null,
+    null,
+    "r-null-dur.jsonl",
+    2
+  );
+  rollupSessions(rollupDb);
+  assert.equal(
+    rollupDb.prepare("SELECT duration_ms FROM sessions WHERE conversation_id = ?").get(nullDurConv)
+      .duration_ms,
+    0
+  );
+}
+
 // Empty conversation_id must not create a sessions row
 rollupDb
   .prepare(
@@ -682,6 +813,42 @@ const stopSessions = rollupDb
   .get().n;
 assert.equal(allTimeSessions, stopSessions);
 assert.ok(allTimeSessions >= 2); // at least rollupConv + modelNoiseConv (+ zeroDur)
+assert.equal(
+  rollupDb.prepare("SELECT COUNT(*) AS n FROM sessions WHERE conversation_id = ?").get("tool-only-conv").n,
+  0,
+  "tool-only conversations must not appear in sessions rollup"
+);
+
+// subagent_count counts subagentStop events only (not stop rows with subagent_type set)
+const subagentCountConv = "conv-subagent-count";
+insertEvent.run(
+  "2026-06-20T15:00:00.000Z",
+  "stop",
+  subagentCountConv,
+  "model-a",
+  1,
+  1,
+  null,
+  "r-sub.jsonl",
+  1
+);
+insertEvent.run(
+  "2026-06-20T15:01:00.000Z",
+  "subagentStop",
+  subagentCountConv,
+  null,
+  null,
+  null,
+  null,
+  "r-sub.jsonl",
+  2
+);
+rollupSessions(rollupDb);
+assert.equal(
+  rollupDb.prepare("SELECT subagent_count FROM sessions WHERE conversation_id = ?").get(subagentCountConv)
+    .subagent_count,
+  1
+);
 rollupDb.close();
 
 // Retention: prune events older than N days
@@ -779,6 +946,74 @@ assert.equal(
   "new prompt"
 );
 promptRetentionDb.close();
+
+// Retention: clearing transcript prompts also drops transcript fingerprints for re-ingest
+{
+  const retentionTranscriptDir = path.join(
+    tmp,
+    "projects-retention",
+    "c-Development-Retention",
+    "agent-transcripts",
+    "conv-retention-transcript"
+  );
+  fs.mkdirSync(retentionTranscriptDir, { recursive: true });
+  const retentionTranscriptPath = path.join(
+    retentionTranscriptDir,
+    "conv-retention-transcript.jsonl"
+  );
+  fs.writeFileSync(
+    retentionTranscriptPath,
+    JSON.stringify({
+      role: "user",
+      message: {
+        content: [{ type: "text", text: "<user_query>\nretention transcript prompt\n</user_query>" }],
+      },
+    }) + "\n"
+  );
+  const retentionTranscriptDb = openDatabase(path.join(tmp, "retention-transcript.db"));
+  const retentionTranscriptConfig = {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory-retention-transcript"),
+    hooksLogsDir: hooksDir,
+    projectsDir: path.join(tmp, "projects-retention"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: true,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  };
+  ingestAll(retentionTranscriptDb, retentionTranscriptConfig);
+  assert.equal(
+    retentionTranscriptDb.prepare("SELECT COUNT(*) AS n FROM transcripts").get().n,
+    1
+  );
+  retentionTranscriptDb
+    .prepare(`UPDATE prompts SET ts = ? WHERE source = 'transcript'`)
+    .run("2020-01-01T00:00:00.000Z");
+  const transcriptRetention = applyRetention(retentionTranscriptDb, {
+    retention: { keepRawEventsDays: 30 },
+  });
+  assert.equal(transcriptRetention.prunedPrompts, 1);
+  assert.equal(
+    retentionTranscriptDb.prepare("SELECT COUNT(*) AS n FROM transcripts").get().n,
+    0,
+    "transcript fingerprint must be removed when transcript prompts are pruned"
+  );
+  const reingest = ingestAll(retentionTranscriptDb, retentionTranscriptConfig);
+  assert.equal(reingest.transcripts.transcripts, 1);
+  assert.equal(reingest.transcripts.prompts, 1);
+  assert.ok(
+    retentionTranscriptDb
+      .prepare("SELECT preview FROM prompts LIMIT 1")
+      .get()
+      .preview.includes("retention transcript prompt")
+  );
+  retentionTranscriptDb.close();
+}
 
 // Prune + rollup: session aggregates reflect retained events only
 const pruneDbPath = path.join(tmp, "prune-rollup.db");
@@ -946,6 +1181,47 @@ assert.ok(
     .preview.includes("updated prompt after mtime")
 );
 mtimeChangeDb.close();
+
+// Transcript ingest: BOM-only lines must not inflate line_count metadata
+{
+  const bomLineDir = path.join(
+    tmp,
+    "projects",
+    "c-Development-BomLine",
+    "agent-transcripts",
+    "conv-bom-line"
+  );
+  fs.mkdirSync(bomLineDir, { recursive: true });
+  const bomLinePath = path.join(bomLineDir, "conv-bom-line.jsonl");
+  fs.writeFileSync(
+    bomLinePath,
+    `\uFEFF   \n${JSON.stringify({
+      role: "user",
+      message: { content: [{ type: "text", text: "<user_query>\nbom line count\n</user_query>" }] },
+    })}\n`
+  );
+  const bomLineDb = openDatabase(path.join(tmp, "transcript-bom-line.db"));
+  ingestAll(bomLineDb, {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory-bom-line"),
+    hooksLogsDir: hooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: false,
+      transcripts: true,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(
+    bomLineDb.prepare("SELECT line_count FROM transcripts WHERE path = ?").get(bomLinePath).line_count,
+    1
+  );
+  bomLineDb.close();
+}
 
 // Transcript re-ingest: same mtime but changed size re-parses
 const sameMtimeProjectsDir = path.join(tmp, "projects-same-mtime");
@@ -1395,6 +1671,39 @@ aliasDb.close();
     cursorHome: path.join(tmp, "subagent-name-hooks"),
     dataDir: path.join(tmp, "observatory"),
     hooksLogsDir: subagentNameHooksDir,
+// subagent-audit: transcript_path alias order, project attribution, preview alias fallthrough
+{
+  const subagentMetaHooksDir = path.join(tmp, "subagent-meta-hooks", "logs");
+  fs.mkdirSync(subagentMetaHooksDir, { recursive: true });
+  const subagentTranscript = path.join(
+    tmp,
+    "projects",
+    "c-Users-dev-myapp",
+    "agent-transcripts",
+    "conv-subagent-meta.jsonl"
+  );
+  fs.mkdirSync(path.dirname(subagentTranscript), { recursive: true });
+  fs.writeFileSync(subagentTranscript, "\n");
+  fs.writeFileSync(
+    path.join(subagentMetaHooksDir, "subagent-audit.jsonl"),
+    [
+      JSON.stringify({
+        timestamp: "2026-06-21T11:00:00.000Z",
+        event: "subagentStop",
+        conversation_id: "conv-subagent-meta",
+        transcript_path: subagentTranscript,
+        agent_transcript_path: "/ignored/other.jsonl",
+        task: "   ",
+        description: "search auth handlers",
+        subagent_type: "explore",
+      }),
+    ].join("\n") + "\n"
+  );
+  const subagentMetaDb = openDatabase(path.join(tmp, "subagent-meta.db"));
+  const subagentMetaSummary = ingestAll(subagentMetaDb, {
+    cursorHome: path.join(tmp, "subagent-meta-hooks"),
+    dataDir: path.join(tmp, "observatory-subagent-meta"),
+    hooksLogsDir: subagentMetaHooksDir,
     projectsDir: path.join(tmp, "projects"),
     ingest: {
       auditLogs: false,
@@ -1414,6 +1723,53 @@ aliasDb.close();
     "subagentStop"
   );
   subagentNameDb.close();
+  assert.equal(subagentMetaSummary.subagent.inserted, 1);
+  const subagentMetaRow = subagentMetaDb
+    .prepare("SELECT project, prompt_preview, transcript_path FROM events WHERE conversation_id = ?")
+    .get("conv-subagent-meta");
+  assert.equal(subagentMetaRow.project, `C:${path.sep}Users${path.sep}dev${path.sep}myapp`);
+  assert.equal(subagentMetaRow.transcript_path, subagentTranscript);
+  assert.equal(subagentMetaRow.prompt_preview, "search auth handlers");
+  subagentMetaDb.close();
+}
+
+// tool-failures: whitespace-only error must fall through to message
+{
+  const toolPreviewHooksDir = path.join(tmp, "tool-preview-hooks", "logs");
+  fs.mkdirSync(toolPreviewHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(toolPreviewHooksDir, "tool-failures.jsonl"),
+    JSON.stringify({
+      timestamp: "2026-06-21T11:05:00.000Z",
+      conversation_id: "conv-tool-preview",
+      tool_name: "Shell",
+      error: "   ",
+      message: "command not found",
+    }) + "\n"
+  );
+  const toolPreviewDb = openDatabase(path.join(tmp, "tool-preview.db"));
+  ingestAll(toolPreviewDb, {
+    cursorHome: path.join(tmp, "tool-preview-hooks"),
+    dataDir: path.join(tmp, "observatory-tool-preview"),
+    hooksLogsDir: toolPreviewHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: false,
+      toolFailures: true,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(
+    toolPreviewDb
+      .prepare("SELECT prompt_preview FROM events WHERE conversation_id = ?")
+      .get("conv-tool-preview").prompt_preview,
+    "command not found"
+  );
+  toolPreviewDb.close();
 }
 
 // Hook events ingest: collector stream at dataDir/events/hook-events.jsonl
@@ -1818,6 +2174,28 @@ dayDb.close();
   assert.ok(blankDayRow, "expected daily row for blank-id day");
   assert.equal(blankDayRow.sessions, 1, "blank conversation_id must be excluded from daily sessions");
   blankDayDb.close();
+}
+
+// hourly_stats.session_count counts distinct stop conversations only
+{
+  const hourlyDb = openDatabase(path.join(tmp, "hourly-sessions.db"));
+  const hourKey = "2026-06-22T10";
+  const ins = hourlyDb.prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, model, input_tokens, output_tokens, source_file, source_line)
+     VALUES (?, ?, ?, 'model-a', ?, ?, 'h.jsonl', ?)`
+  );
+  ins.run(`${hourKey}:05:00.000Z`, "preToolUse", "tool-only-conv", null, null, 1);
+  ins.run(`${hourKey}:10:00.000Z`, "stop", "stop-conv", 10, 1, 2);
+  runAllRollups(hourlyDb);
+  const row = hourlyDb
+    .prepare(`SELECT session_count FROM hourly_stats WHERE hour_key = ? AND model = 'model-a'`)
+    .get(hourKey);
+  assert.equal(
+    row.session_count,
+    1,
+    "tool-only conversation must not inflate hourly session_count"
+  );
+  hourlyDb.close();
 }
 
 // daily_stats.prompt_count must respect model dimension (not duplicate across models)
@@ -2707,6 +3085,24 @@ const collectorEntry = JSON.parse(fs.readFileSync(collectorLog, "utf8").trim().s
 assert.equal(collectorEntry.hook_event_name, "stop");
 assert.equal(collectorEntry.conversation_id, "conv-collector");
 
+// Collector: string workspace_roots coerced to single-element array
+const collectorStringRoots = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({
+    event: "stop",
+    session_id: "conv-collector-string-root",
+    timestamp: "2026-06-20T15:30:00.000Z",
+    model: "collector-sub",
+    workspace_roots: "/c:/Development/Collector",
+  }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorStringRoots.status, 0);
+const stringRootEntry = JSON.parse(
+  fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
+);
+assert.deepEqual(stringRootEntry.workspace_roots, ["/c:/Development/Collector"]);
+
 // Reject non-object / missing event name
 const collectorReject = spawnSync(process.execPath, [collectorScript], {
   input: "null",
@@ -2714,7 +3110,7 @@ const collectorReject = spawnSync(process.execPath, [collectorScript], {
   env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
 });
 assert.equal(collectorReject.status, 0);
-assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 1);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 2);
 
 // Collector: reason → status, epoch ms → ISO, reject non-string event names
 const collectorReason = spawnSync(process.execPath, [collectorScript], {
@@ -2756,7 +3152,7 @@ const collectorBadEvent = spawnSync(process.execPath, [collectorScript], {
   env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
 });
 assert.equal(collectorBadEvent.status, 0);
-assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 3);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 4);
 
 // Collector: blank hook_event_name falls through to event; naive datetime → UTC ISO
 const collectorBlankNameAlias = spawnSync(process.execPath, [collectorScript], {
@@ -2832,6 +3228,41 @@ assert.equal(collectorBlankAliasesEntry.status, "completed");
   assert.ok(fs.existsSync(cursorHomeLog), "collector must honor cursorHome when dataDir omitted");
   const cursorHomeEntry = JSON.parse(fs.readFileSync(cursorHomeLog, "utf8").trim().split("\n").pop());
   assert.equal(cursorHomeEntry.conversation_id, "conv-cursor-home");
+}
+
+// Collector: BOM-prefixed config.json must still resolve custom dataDir
+{
+  const fakeHome = path.join(tmp, "collector-bom-home");
+  const customDataDir = path.join(tmp, "collector-bom-data");
+  const cfgDir = path.join(fakeHome, ".cursor", "observatory");
+  fs.mkdirSync(cfgDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(cfgDir, "config.json"),
+    "\uFEFF" + JSON.stringify({ dataDir: customDataDir })
+  );
+  const homeEnv = process.platform === "win32" ? "USERPROFILE" : "HOME";
+  const collectorBomEnv = {
+    ...process.env,
+    [homeEnv]: fakeHome,
+    HOME: fakeHome,
+    USERPROFILE: fakeHome,
+  };
+  delete collectorBomEnv.OBSERVATORY_DATA_DIR;
+  const collectorBom = spawnSync(process.execPath, [collectorScript], {
+    input: JSON.stringify({
+      event: "stop",
+      session_id: "conv-bom-config",
+      timestamp: "2026-06-20T16:30:00.000Z",
+      model: "bom-config-model",
+    }),
+    encoding: "utf8",
+    env: collectorBomEnv,
+  });
+  assert.equal(collectorBom.status, 0, collectorBom.stderr || collectorBom.stdout);
+  const bomLog = path.join(customDataDir, "events", "hook-events.jsonl");
+  assert.ok(fs.existsSync(bomLog), "collector must honor BOM-prefixed config dataDir");
+  const bomEntry = JSON.parse(fs.readFileSync(bomLog, "utf8").trim().split("\n").pop());
+  assert.equal(bomEntry.conversation_id, "conv-bom-config");
 }
 
 // Watch smoke: refresh once, stop cleanly, no overlapping onRefresh
@@ -2972,6 +3403,62 @@ watchDb.close();
   }
 }
 
+// Watch attaches an error listener so runtime watcher failures do not crash the process
+{
+  const watchErrDb = openDatabase(path.join(tmp, "watch-err-listener.db"));
+  const origWatch = fs.watch;
+  const origWarn = console.warn;
+  const warnLines = [];
+  const fakeWatchers = [];
+  fs.watch = () => {
+    const listeners = {};
+    const w = {
+      on(event, fn) {
+        (listeners[event] ||= []).push(fn);
+        return w;
+      },
+      emit(event, ...args) {
+        for (const fn of listeners[event] || []) fn(...args);
+      },
+      close() {},
+    };
+    fakeWatchers.push(w);
+    return w;
+  };
+  console.warn = (...args) => warnLines.push(args.join(" "));
+  try {
+    const stopErrWatch = startWatch(
+      {
+        hooksLogsDir: path.join(tmp, "watch-err-hooks"),
+        projectsDir: path.join(tmp, "watch-err-projects"),
+        dataDir: path.join(tmp, "watch-err-data"),
+        reportsDir: path.join(tmp, "watch-err-reports"),
+        ingest: {
+          auditLogs: false,
+          sessionSummary: false,
+          subagentAudit: false,
+          toolFailures: false,
+          transcripts: false,
+          hookEvents: false,
+          includeRotatedLogs: false,
+        },
+        recommendations: { enabled: false, llm: { enabled: false } },
+      },
+      watchErrDb,
+      { intervalMs: 60_000 }
+    );
+    await new Promise((r) => setTimeout(r, 40));
+    assert.ok(fakeWatchers.length >= 1);
+    for (const w of fakeWatchers) w.emit("error", new Error("mock EMFILE"));
+    assert.ok(warnLines.some((line) => line.includes("fs.watch error")));
+    await stopErrWatch();
+  } finally {
+    fs.watch = origWatch;
+    console.warn = origWarn;
+    watchErrDb.close();
+  }
+}
+
 // Watch stop waits for an in-flight refresh before returning
 {
   const stopWaitDb = openDatabase(path.join(tmp, "watch-stop-wait.db"));
@@ -3099,6 +3586,33 @@ assert.equal(
   1
 );
 parseableDb.close();
+
+// Newline-terminated JSONL followed by trailing whitespace is still complete
+{
+  const trailWsHooksDir = path.join(tmp, "hooks-trail-ws", "logs");
+  fs.mkdirSync(trailWsHooksDir, { recursive: true });
+  const trailWsPath = path.join(trailWsHooksDir, "agent-audit.jsonl");
+  const trailWsLine = JSON.stringify({
+    timestamp: "2026-06-21T14:00:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-trail-ws",
+        hook_event_name: "stop",
+        model: "model-c",
+      }),
+    },
+  });
+  fs.writeFileSync(trailWsPath, trailWsLine + "\n   ");
+  const trailWsDb = openDatabase(path.join(tmp, "trail-ws.db"));
+  const trailWsFirst = ingestAuditLogs(trailWsDb, trailWsHooksDir, false);
+  assert.equal(trailWsFirst.inserted, 1, "trailing whitespace after newline must not skip the row");
+  assert.equal(
+    trailWsDb.prepare("SELECT last_line FROM ingest_checkpoints WHERE source_path = ?").get(trailWsPath)
+      .last_line,
+    1
+  );
+  trailWsDb.close();
+}
 
 // Corrupt middle JSONL line should still advance checkpoint
 const corruptHooksDir = path.join(tmp, "hooks-corrupt", "logs");
@@ -3566,6 +4080,50 @@ corruptDb.close();
   assert.equal(emptyTotals.tool_failures, 0);
   assert.equal(emptyTotals.cache_read, 0);
   emptyStatusDb.close();
+// status behavior query must target all-time / all snapshot (not arbitrary period_key)
+{
+  const behaviorDb = openDatabase(path.join(tmp, "status-behavior.db"));
+  behaviorDb
+    .prepare(
+      `INSERT INTO behavior_snapshots (period, period_key, fluency_score, archetype, real_prompt_count, session_count, computed_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+    )
+    .run("all-time", "stale", 10, "stale", 1, 0);
+  behaviorDb
+    .prepare(
+      `INSERT INTO behavior_snapshots (period, period_key, fluency_score, archetype, real_prompt_count, session_count, computed_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+    )
+    .run("all-time", "all", 88, "power_user", 42, 5);
+  const statusBehavior = queryScalar(
+    behaviorDb,
+    `SELECT fluency_score, archetype, real_prompt_count FROM behavior_snapshots WHERE period='all-time' AND period_key='all'`
+  );
+  assert.equal(statusBehavior.fluency_score, 88);
+  assert.equal(statusBehavior.archetype, "power_user");
+  assert.equal(statusBehavior.real_prompt_count, 42);
+  behaviorDb.close();
+}
+
+// topModels query is capped to keep report payloads bounded
+{
+  const topModelsDb = openDatabase(path.join(tmp, "top-models-cap.db"));
+  const topModelsInsert = topModelsDb.prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, model, input_tokens, output_tokens, source_file, source_line)
+     VALUES (?, 'stop', ?, ?, ?, 1, ?, ?)`
+  );
+  for (let i = 0; i < 25; i++) {
+    topModelsInsert.run(
+      `2026-06-22T10:${String(i).padStart(2, "0")}:00.000Z`,
+      `conv-top-model-${i}`,
+      `model-${i}`,
+      1000 - i,
+      "top-models.jsonl",
+      i + 1
+    );
+  }
+  assert.equal(buildJsonReport(topModelsDb).topModels.length, 20);
+  topModelsDb.close();
 }
 
 // CLI smoke tests
@@ -3616,11 +4174,19 @@ await assert.rejects(() => runCli(["status", "stray"]), /Unexpected argument for
 // --interval validation
 assert.equal(parseIntervalMs([]), 30000);
 assert.equal(parseIntervalMs(["--interval", "60"]), 60000);
+assert.equal(parseIntervalMs(["--interval=60"]), 60000);
 assert.equal(parseIntervalMs(["--interval", "2147483.647"]), 2147483647);
+assert.doesNotThrow(() => assertKnownFlags("watch", ["--interval=5", "--with-llm"]));
 assert.throws(() => parseIntervalMs(["--interval"]), /requires a positive number/);
+assert.throws(() => parseIntervalMs(["--interval="]), /requires a positive number|Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "0"]), /Invalid --interval/);
+assert.throws(() => parseIntervalMs(["--interval=0"]), /Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "-5"]), /requires a positive number|Invalid --interval/);
 assert.throws(() => parseIntervalMs(["--interval", "abc"]), /Invalid --interval/);
+assert.throws(
+  () => parseIntervalMs(["--interval", "60", "--interval=30"]),
+  /specified more than once/
+);
 assert.throws(
   () => parseIntervalMs(["--interval", "2147483.648"]),
   /maximum 2147483\.647 seconds/
