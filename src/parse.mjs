@@ -135,7 +135,6 @@ export function unwrapAuditEntry(outer) {
     pickTs(outer.timestamp, inner.timestamp, outer.ts, inner.ts)
   );
   const workspaceRoots = normalizeWorkspaceRoots(inner.workspace_roots);
-  const workspaceRoots = Array.isArray(inner.workspace_roots) ? inner.workspace_roots : [];
   // Mirror collector/secondary ingest: whitespace-only values fall through to aliases.
   const conversationId = pickNonBlankString(
     inner.conversation_id,

@@ -1671,6 +1671,27 @@ aliasDb.close();
     cursorHome: path.join(tmp, "subagent-name-hooks"),
     dataDir: path.join(tmp, "observatory"),
     hooksLogsDir: subagentNameHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: true,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(subagentNameSummary.subagent.inserted, 1);
+  assert.equal(
+    subagentNameDb.prepare("SELECT event_type FROM events WHERE conversation_id = ?").get(
+      "conv-subagent-name"
+    ).event_type,
+    "subagentStop"
+  );
+  subagentNameDb.close();
+}
+
 // subagent-audit: transcript_path alias order, project attribution, preview alias fallthrough
 {
   const subagentMetaHooksDir = path.join(tmp, "subagent-meta-hooks", "logs");
@@ -1715,14 +1736,6 @@ aliasDb.close();
       includeRotatedLogs: false,
     },
   });
-  assert.equal(subagentNameSummary.subagent.inserted, 1);
-  assert.equal(
-    subagentNameDb.prepare("SELECT event_type FROM events WHERE conversation_id = ?").get(
-      "conv-subagent-name"
-    ).event_type,
-    "subagentStop"
-  );
-  subagentNameDb.close();
   assert.equal(subagentMetaSummary.subagent.inserted, 1);
   const subagentMetaRow = subagentMetaDb
     .prepare("SELECT project, prompt_preview, transcript_path FROM events WHERE conversation_id = ?")
@@ -4080,6 +4093,8 @@ corruptDb.close();
   assert.equal(emptyTotals.tool_failures, 0);
   assert.equal(emptyTotals.cache_read, 0);
   emptyStatusDb.close();
+}
+
 // status behavior query must target all-time / all snapshot (not arbitrary period_key)
 {
   const behaviorDb = openDatabase(path.join(tmp, "status-behavior.db"));
