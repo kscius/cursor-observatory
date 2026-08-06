@@ -18,7 +18,7 @@ Inspired by [claude-insight](https://github.com/Feloguarin/claude-insight) (beha
 ## Requirements
 
 - **Node.js 22+** (uses built-in `node:sqlite`)
-- **Python 3.8+** (optional — standalone heuristic demo: `python3 analyzer/behavior.py prompts.json`; live dashboard scoring uses `src/behavior.mjs`)
+- **Python 3.8+** (optional for normal CLI use — standalone heuristic demo: `python3 analyzer/behavior.py prompts.json`; live dashboard scoring uses `src/behavior.mjs`). `npm test` runs Python analyzer regression checks when `python3` or `python` is on `PATH` (skipped otherwise).
 - Cursor with hooks logging to `~/.cursor/hooks/logs/` (KS Cursor Orchestrator setup already does this)
 
 ## Quick start
