@@ -64,17 +64,29 @@ function* readLinesFromContent(content, startLine = 0) {
 
 function ingestJsonlFile(db, filePath, mapFn, { replaceOnRead = false } = {}) {
   let stat;
-  let content;
   try {
     stat = fs.statSync(filePath);
-    content = fs.readFileSync(filePath, "utf8");
   } catch (err) {
     // Watch/rotation races: file may disappear between discovery and read.
     if (err && err.code === "ENOENT") return { lines: 0, inserted: 0, skipped: 0 };
     throw err;
   }
-  const completeLineCount = countCompleteLines(content);
+
   const cp = getCheckpoint(db, filePath);
+  // Append-only JSONL with unchanged size has no new bytes — skip full-file reads
+  // on watch/interval refreshes (same-size in-place rewrites need ingest --full).
+  if (!replaceOnRead && stat.size === cp.last_size) {
+    return { lines: 0, inserted: 0, skipped: 0 };
+  }
+
+  let content;
+  try {
+    content = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return { lines: 0, inserted: 0, skipped: 0 };
+    throw err;
+  }
+  const completeLineCount = countCompleteLines(content);
   let startLine = cp.last_line;
   // Rotated snapshots (*.old) are wholesale replacements, not append-only logs.
   // Same/larger size must still reset — size-shrink detection alone misses replacements.

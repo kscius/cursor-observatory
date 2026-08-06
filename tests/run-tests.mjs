@@ -37,6 +37,18 @@ import { startWatch } from "../src/watch.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+function resolvePythonExecutable() {
+  const fromEnv = process.env.PYTHON?.trim();
+  if (fromEnv) return fromEnv;
+  const candidates =
+    process.platform === "win32" ? ["python", "python3", "py"] : ["python3", "python"];
+  for (const cmd of candidates) {
+    const probe = spawnSync(cmd, ["--version"], { encoding: "utf8" });
+    if (probe.status === 0) return cmd;
+  }
+  return null;
+}
+
 const windowsProject = `C:${path.sep}Development${path.sep}AGORA`;
 assert.equal(decodeProjectSlug("c-Development-AGORA"), windowsProject);
 // Unix Cursor project slugs must stay opaque (not misread as a Windows drive).
@@ -3777,42 +3789,47 @@ corruptDb.close();
 
 // Optional Python analyzer: coerce non-string prompt entries
 {
-  const behaviorPy = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "analyzer", "behavior.py");
-  const promptsJson = path.join(tmp, "behavior-prompts.json");
-  fs.writeFileSync(promptsJson, JSON.stringify({ prompts: ["fix the bug", 123, null, ""] }));
-  const py = spawnSync("python3", [behaviorPy, promptsJson], { encoding: "utf8" });
-  assert.equal(py.status, 0, py.stderr || py.stdout);
-  const scored = JSON.parse(py.stdout);
-  assert.equal(scored.real_prompt_count, 2);
-  assert.ok(typeof scored.fluency_score === "number");
+  const pythonExe = resolvePythonExecutable();
+  if (!pythonExe) {
+    console.warn("Skipping Python analyzer tests: python3/python not found on PATH");
+  } else {
+    const behaviorPy = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "analyzer", "behavior.py");
+    const promptsJson = path.join(tmp, "behavior-prompts.json");
+    fs.writeFileSync(promptsJson, JSON.stringify({ prompts: ["fix the bug", 123, null, ""] }));
+    const py = spawnSync(pythonExe, [behaviorPy, promptsJson], { encoding: "utf8" });
+    assert.equal(py.status, 0, py.stderr || py.stdout);
+    const scored = JSON.parse(py.stdout);
+    assert.equal(scored.real_prompt_count, 2);
+    assert.ok(typeof scored.fluency_score === "number");
 
-  const missing = spawnSync("python3", [behaviorPy, path.join(tmp, "missing-prompts.json")], {
-    encoding: "utf8",
-  });
-  assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /error: cannot read/i);
-  assert.ok(!missing.stderr.includes("Traceback"));
+    const missing = spawnSync(pythonExe, [behaviorPy, path.join(tmp, "missing-prompts.json")], {
+      encoding: "utf8",
+    });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /error: cannot read/i);
+    assert.ok(!missing.stderr.includes("Traceback"));
 
-  const badJsonPath = path.join(tmp, "bad-prompts.json");
-  fs.writeFileSync(badJsonPath, "{not-json");
-  const badJson = spawnSync("python3", [behaviorPy, badJsonPath], { encoding: "utf8" });
-  assert.notEqual(badJson.status, 0);
-  assert.match(badJson.stderr, /error: invalid JSON/i);
-  assert.ok(!badJson.stderr.includes("Traceback"));
+    const badJsonPath = path.join(tmp, "bad-prompts.json");
+    fs.writeFileSync(badJsonPath, "{not-json");
+    const badJson = spawnSync(pythonExe, [behaviorPy, badJsonPath], { encoding: "utf8" });
+    assert.notEqual(badJson.status, 0);
+    assert.match(badJson.stderr, /error: invalid JSON/i);
+    assert.ok(!badJson.stderr.includes("Traceback"));
 
-  const scalarPath = path.join(tmp, "scalar-prompts.json");
-  fs.writeFileSync(scalarPath, "123");
-  const scalar = spawnSync("python3", [behaviorPy, scalarPath], { encoding: "utf8" });
-  assert.notEqual(scalar.status, 0);
-  assert.match(scalar.stderr, /error: expected a JSON list or object/i);
-  assert.ok(!scalar.stderr.includes("Traceback"));
+    const scalarPath = path.join(tmp, "scalar-prompts.json");
+    fs.writeFileSync(scalarPath, "123");
+    const scalar = spawnSync(pythonExe, [behaviorPy, scalarPath], { encoding: "utf8" });
+    assert.notEqual(scalar.status, 0);
+    assert.match(scalar.stderr, /error: expected a JSON list or object/i);
+    assert.ok(!scalar.stderr.includes("Traceback"));
 
-  const badPromptsType = path.join(tmp, "bad-prompts-type.json");
-  fs.writeFileSync(badPromptsType, JSON.stringify({ prompts: "fix the bug" }));
-  const badType = spawnSync("python3", [behaviorPy, badPromptsType], { encoding: "utf8" });
-  assert.notEqual(badType.status, 0);
-  assert.match(badType.stderr, /error: prompts must be a JSON list/i);
-  assert.ok(!badType.stderr.includes("Traceback"));
+    const badPromptsType = path.join(tmp, "bad-prompts-type.json");
+    fs.writeFileSync(badPromptsType, JSON.stringify({ prompts: "fix the bug" }));
+    const badType = spawnSync(pythonExe, [behaviorPy, badPromptsType], { encoding: "utf8" });
+    assert.notEqual(badType.status, 0);
+    assert.match(badType.stderr, /error: prompts must be a JSON list/i);
+    assert.ok(!badType.stderr.includes("Traceback"));
+  }
 }
 
 // topTools must not count toolFailure rows as uses

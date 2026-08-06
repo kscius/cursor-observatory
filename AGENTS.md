@@ -41,3 +41,5 @@ Non-obvious caveats:
 - LLM coaching is **opt-in** (`recommendations.llm.enabled` is `false` in
   `config.example.json`). Enable via `--with-llm` or config; without
   `OPENAI_API_KEY` it silently no-ops. No key is required for normal operation.
+- **`npm test` runs Python analyzer checks** when `python3` or `python` is on
+  `PATH` (skipped otherwise). CI installs Python explicitly in `.github/workflows/test.yml`.
