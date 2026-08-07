@@ -861,6 +861,14 @@ assert.equal(
     .subagent_count,
   1
 );
+// totals.subagent_events must match session subagent_count semantics (subagentStop only)
+rollupDb
+  .prepare(
+    `INSERT INTO events (ts, event_type, conversation_id, subagent_type, source_file, source_line)
+     VALUES (?, 'stop', ?, ?, ?, ?)`
+  )
+  .run("2026-06-20T15:02:00.000Z", subagentCountConv, "explore", "r-sub.jsonl", 3);
+assert.equal(buildJsonReport(rollupDb).totals.subagent_events, 1);
 rollupDb.close();
 
 // Retention: prune events older than N days
@@ -1117,6 +1125,49 @@ assert.ok(
 assert.ok(
   !transcriptDb.prepare("SELECT preview FROM prompts LIMIT 1").get().preview.includes("<user_query>")
 );
+
+// Transcript ingest: incomplete trailing line must not ingest or fingerprint (mid-write safety)
+{
+  const partialTranscriptDir = path.join(
+    tmp,
+    "projects-partial",
+    "c-Development-Partial",
+    "agent-transcripts",
+    "conv-partial-trailing"
+  );
+  fs.mkdirSync(partialTranscriptDir, { recursive: true });
+  const partialTranscriptPath = path.join(partialTranscriptDir, "conv-partial-trailing.jsonl");
+  const completeLine = JSON.stringify({
+    role: "user",
+    message: {
+      content: [{ type: "text", text: "<user_query>\nfirst complete prompt\n</user_query>" }],
+    },
+  });
+  const partialSecondLine = JSON.stringify({
+    role: "user",
+    message: {
+      content: [{ type: "text", text: "<user_query>\nsecond prompt pending\n</user_query>" }],
+    },
+  });
+  fs.writeFileSync(partialTranscriptPath, `${completeLine}\n${partialSecondLine}`); // no trailing newline
+  const partialTranscriptDb = openDatabase(path.join(tmp, "partial-transcript.db"));
+  const partialTranscriptConfig = {
+    ...transcriptConfig,
+    projectsDir: path.join(tmp, "projects-partial"),
+  };
+  const partialFirst = ingestAll(partialTranscriptDb, partialTranscriptConfig);
+  assert.equal(partialFirst.transcripts.transcripts, 0);
+  assert.equal(partialFirst.transcripts.prompts, 0);
+  assert.equal(
+    partialTranscriptDb.prepare("SELECT COUNT(*) AS n FROM transcripts").get().n,
+    0
+  );
+  fs.writeFileSync(partialTranscriptPath, `${completeLine}\n${partialSecondLine}\n`);
+  const partialComplete = ingestAll(partialTranscriptDb, partialTranscriptConfig);
+  assert.equal(partialComplete.transcripts.transcripts, 1);
+  assert.equal(partialComplete.transcripts.prompts, 2);
+  partialTranscriptDb.close();
+}
 
 // Transcript ingest: BOM-prefixed lines parse correctly
 {
@@ -3171,13 +3222,30 @@ const collectorBlankTsEntry = JSON.parse(
   fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
 );
 assert.equal(collectorBlankTsEntry.ts, "2026-06-20T17:30:00.000Z");
+// Collector: boolean timestamp blockers must fall through to `ts` (match parse.mjs pickTs)
+const collectorBoolTs = spawnSync(process.execPath, [collectorScript], {
+  input: JSON.stringify({
+    hook_event_name: "stop",
+    session_id: "conv-collector-bool-ts",
+    timestamp: false,
+    ts: "2026-06-20T17:30:00.000Z",
+    model: "bool-ts-model",
+  }),
+  encoding: "utf8",
+  env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
+});
+assert.equal(collectorBoolTs.status, 0);
+const collectorBoolTsEntry = JSON.parse(
+  fs.readFileSync(collectorLog, "utf8").trim().split("\n").pop()
+);
+assert.equal(collectorBoolTsEntry.ts, "2026-06-20T17:30:00.000Z");
 const collectorBadEvent = spawnSync(process.execPath, [collectorScript], {
   input: JSON.stringify({ event: { name: "stop" }, session_id: "nope" }),
   encoding: "utf8",
   env: { ...process.env, OBSERVATORY_DATA_DIR: collectorDataDir },
 });
 assert.equal(collectorBadEvent.status, 0);
-assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 4);
+assert.equal(fs.readFileSync(collectorLog, "utf8").trim().split("\n").length, 5);
 
 // Collector: blank hook_event_name falls through to event; naive datetime → UTC ISO
 const collectorBlankNameAlias = spawnSync(process.execPath, [collectorScript], {

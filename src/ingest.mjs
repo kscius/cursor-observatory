@@ -330,13 +330,18 @@ export function ingestTranscripts(db, projectsDir, { force = false } = {}) {
       continue;
     }
 
-    let lines;
+    let content;
     try {
-      lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+      content = fs.readFileSync(filePath, "utf8");
     } catch (err) {
       if (err && err.code === "ENOENT") continue;
       throw err;
     }
+    // Mid-write transcript: wait for a trailing newline before ingesting or
+    // fingerprinting so a partial last line cannot be locked in (audit JSONL parity).
+    if (!hasCompleteTrailingLine(content)) continue;
+
+    const lines = content.split(/\r?\n/);
 
     const project =
       projectFromTranscriptPath(filePath) ||

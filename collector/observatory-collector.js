@@ -50,12 +50,11 @@ function resolveLogDir() {
   return path.join(home, ".cursor", "observatory", "events");
 }
 
-/** First non-empty timestamp candidate (skips null/undefined/blank strings). */
+/** First finite number or non-blank string timestamp (match src/parse.mjs). */
 function pickTs(...candidates) {
   for (const c of candidates) {
-    if (c === null || c === undefined) continue;
-    if (typeof c === "string" && !c.trim()) continue;
-    return c;
+    if (typeof c === "number" && Number.isFinite(c)) return c;
+    if (typeof c === "string" && c.trim()) return c;
   }
   return null;
 }
