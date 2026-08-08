@@ -186,7 +186,8 @@ export function unwrapAuditEntry(outer) {
 export function num(v) {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
 }
 
 export function extractUserText(content) {
