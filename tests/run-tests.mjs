@@ -22,6 +22,7 @@ import {
   normalizeTs,
   pickTs,
   pickNonBlankString,
+  num,
 } from "../src/parse.mjs";
 import { scoreBehaviorFromPrompts } from "../src/behavior.mjs";
 import { openDatabase, insertEvent as insertEventRow, withTransaction, queryScalar } from "../src/db.mjs";
@@ -405,6 +406,33 @@ assert.ok(behavior.archetype);
 const withTests = scoreBehaviorFromPrompts(["please run tests on the module"]);
 assert.ok(withTests.dimensions.verification > 0, "tests regex should match");
 
+// num() coercion: finite non-negative numbers only
+assert.equal(num("42"), 42);
+assert.equal(num(0), 0);
+assert.equal(num(""), null);
+assert.equal(num("abc"), null);
+assert.equal(num(Infinity), null);
+assert.equal(num(-5), null);
+assert.equal(num("-1"), null);
+
+// Negative token fields from audit payloads must not skew totals
+{
+  const neg = unwrapAuditEntry({
+    timestamp: "2026-06-20T12:00:00.000Z",
+    data: {
+      raw: JSON.stringify({
+        conversation_id: "conv-neg-tokens",
+        hook_event_name: "stop",
+        model: "test-model",
+        input_tokens: -100,
+        output_tokens: -50,
+      }),
+    },
+  });
+  assert.equal(neg.inputTokens, null);
+  assert.equal(neg.outputTokens, null);
+}
+
 // Empty DB report totals must be numeric zeros (not null SUM results)
 {
   const emptyDb = openDatabase(path.join(os.tmpdir(), `obs-empty-${process.pid}-${Date.now()}.db`));
@@ -434,6 +462,7 @@ const auditLine = JSON.stringify({
       input_tokens: 500,
       output_tokens: 50,
       cache_read_tokens: 100,
+      cache_write_tokens: 75,
       workspace_roots: ["/c:/Development/TestProject"],
     }),
   },
@@ -462,6 +491,7 @@ const report = buildJsonReport(db);
 assert.ok(report.totals.events >= 1);
 assert.ok(report.totals.input_tokens >= 500);
 assert.ok(report.totals.cache_read_tokens >= 100);
+assert.ok(report.totals.cache_write_tokens >= 75);
 assert.ok(Array.isArray(report.hourlyToday));
 assert.ok("toolFailures" in report);
 assert.ok("behaviorTrend" in report);
@@ -1511,6 +1541,40 @@ assert.equal(secondaryEvents[2].conversation_id, "conv-tool-fail");
 assert.equal(secondaryEvents[2].tool_name, "Shell");
 secondaryDb.close();
 
+// subagent-audit rows without hook_event_name/event are skipped (do not invent subagentStop)
+{
+  const noNameHooksDir = path.join(tmp, "subagent-no-name", "logs");
+  fs.mkdirSync(noNameHooksDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(noNameHooksDir, "subagent-audit.jsonl"),
+    JSON.stringify({
+      timestamp: "2026-06-21T10:05:00.000Z",
+      subagent_type: "explore",
+      task: "orphan row without event name",
+      status: "completed",
+    }) + "\n"
+  );
+  const noNameDb = openDatabase(path.join(tmp, "subagent-no-name.db"));
+  const noNameSummary = ingestAll(noNameDb, {
+    cursorHome: path.join(tmp, "subagent-no-name"),
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: noNameHooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: true,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: false,
+      includeRotatedLogs: false,
+    },
+  });
+  assert.equal(noNameSummary.subagent.inserted, 0);
+  assert.equal(noNameSummary.subagent.skipped, 1);
+  noNameDb.close();
+}
+
 // Secondary logs: collector-style `ts` and status aliases (status/final_status/reason)
 const aliasHooksDir = path.join(tmp, "alias-hooks", "logs");
 fs.mkdirSync(aliasHooksDir, { recursive: true });
@@ -2119,6 +2183,29 @@ try {
   assert.ok(
     warnLines.some((line) => line.includes("sessionSummary and hookEvents are both enabled")),
     "expected sessionSummary + hookEvents double-count warning"
+  );
+
+  warnLines.length = 0;
+  const warnSubagentDb = openDatabase(path.join(tmp, "subagent-hook-stream.db"));
+  ingestAll(warnSubagentDb, {
+    cursorHome: tmp,
+    dataDir: path.join(tmp, "observatory"),
+    hooksLogsDir: hooksDir,
+    projectsDir: path.join(tmp, "projects"),
+    ingest: {
+      auditLogs: false,
+      sessionSummary: false,
+      subagentAudit: true,
+      toolFailures: false,
+      transcripts: false,
+      hookEvents: true,
+      includeRotatedLogs: false,
+    },
+  });
+  warnSubagentDb.close();
+  assert.ok(
+    warnLines.some((line) => line.includes("subagentAudit and hookEvents are both enabled")),
+    "expected subagentAudit + hookEvents double-count warning"
   );
 } finally {
   console.warn = origWarn;

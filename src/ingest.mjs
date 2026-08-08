@@ -166,10 +166,13 @@ function auditToEvent(outer, sourceFile, sourceLine) {
 }
 
 function subagentToEvent(outer, sourceFile, sourceLine) {
+  // Mirror hook-event ingest: skip rows without a usable event name (do not invent).
+  const eventName = pickNonBlankString(outer.hook_event_name, outer.event);
+  if (!eventName) return null;
   const transcriptPath = pickNonBlankString(outer.transcript_path, outer.agent_transcript_path);
   return {
     ts: eventTs(outer),
-    eventType: pickNonBlankString(outer.hook_event_name, outer.event) || "subagentStop",
+    eventType: eventName,
     conversationId: pickNonBlankString(outer.conversation_id, outer.session_id),
     generationId: outer.generation_id || null,
     model: outer.model || null,
@@ -449,6 +452,11 @@ export function ingestAll(db, config, { full = false } = {}) {
   if (config.ingest.sessionSummary && config.ingest.hookEvents) {
     console.warn(
       "[observatory] sessionSummary and hookEvents are both enabled; collector sessionEnd events may double-count durations with session-summary.jsonl. Set ingest.sessionSummary to false when using the collector (see README)."
+    );
+  }
+  if (config.ingest.subagentAudit && config.ingest.hookEvents) {
+    console.warn(
+      "[observatory] subagentAudit and hookEvents are both enabled; collector subagentStop events may double-count with subagent-audit.jsonl. Set ingest.subagentAudit to false when using the collector (see README)."
     );
   }
 
